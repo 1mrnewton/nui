@@ -1,0 +1,12 @@
+[package]
+name = "nuic"
+version = "0.0.1"
+edition = "2021"
+description = "nui compiler — parses .nui and emits native UI (SwiftUI first)"
+
+[[bin]]
+name = "nuic"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2

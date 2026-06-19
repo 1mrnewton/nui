@@ -1,0 +1,67 @@
+// examples/counter.nui
+//
+// Counter + control panel — exercises the growing nui vocabulary:
+// Scroll, Card, Divider, If/else, Icon, Progress, Switch, Slider, TextField.
+
+component Counter {
+
+    state {
+        count: Int = 0
+        step: Int = 1
+        show_label: Bool = true
+        title: String = "Counter"
+    }
+
+    event increment
+    event decrement
+    event reset
+    event set_step
+    event set_show_label
+    event set_title
+
+    Scroll {
+        Column(spacing: 20, padding: 24, align: center) {
+
+            Row(spacing: 8, align: center) {
+                Icon(icon: refresh, tint: secondary, size: 22)
+                Text("\(title)")
+                    .font(size: 28, weight: bold)
+            }
+
+            Card {
+                Column(spacing: 16, align: center) {
+                    Text("\(count)")
+                        .font(size: 72, weight: bold)
+
+                    If(show_label) {
+                        Text("step by \(step)")
+                            .font(size: 14)
+                            .color(secondary)
+                    } else {
+                        Text("subtitle hidden")
+                            .font(size: 14)
+                            .color(secondary)
+                    }
+
+                    Progress(bind: count, max: 20)
+
+                    Row(spacing: 20) {
+                        IconButton(icon: minus, tint: red) -> decrement
+                        IconButton(icon: plus, tint: green) -> increment
+                    }
+
+                    Button("Reset") -> reset
+                        .style(bordered)
+                }
+            }
+
+            Divider()
+
+            Column(spacing: 12) {
+                Slider(label: "Step", bind: step, min: 1, max: 10) -> set_step
+                Switch(label: "Show subtitle", bind: show_label) -> set_show_label
+                TextField(label: "Title", bind: title) -> set_title
+            }
+        }
+    }
+}

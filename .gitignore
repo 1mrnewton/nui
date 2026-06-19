@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Rust
+compiler/target/
+
+# Android
+android/.gradle/
+android/local.properties
+android/**/build/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
