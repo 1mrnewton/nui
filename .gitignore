@@ -6,4 +6,5 @@
 /logic/counter/app/build
 /CounterView.swift
 /CounterViewController.swift
+/ToggleViewController.swift
 .DS_Store
