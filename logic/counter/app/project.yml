@@ -1,14 +1,16 @@
 # XcodeGen spec for the nui demo apps.
 #
-# Three app targets share the same Rust logic crate (CounterLogic.xcframework):
+# Four app targets share the same Rust logic crate (CounterLogic.xcframework):
 #   CounterApp      — counter, SwiftUI backend (CounterView.swift)
 #   CounterAppUIKit — counter, UIKit backend (CounterViewController.swift)
 #   ToggleAppUIKit  — if/else demo, UIKit backend (ToggleViewController.swift)
+#   ProfileAppUIKit — record-types demo, UIKit backend (ProfileViewController.swift)
 #
 # Prerequisites (from the repo root):
 #   nui build examples/counter.nui -o CounterView.swift
 #   nui build examples/counter.nui --target uikit -o CounterViewController.swift
 #   nui build examples/toggle.nui --target uikit -o ToggleViewController.swift
+#   nui build examples/profile.nui --target uikit -o ProfileViewController.swift
 #   logic/counter/build-xcframework.sh
 # Then:
 #   cd logic/counter/app && xcodegen generate
@@ -78,6 +80,26 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  ProfileAppUIKit:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../../../ProfileViewController.swift  # nui-generated UI (UIKit)
+      - path: ../swift/ProfileAppUIKit.swift        # app entry point (pure UIKit)
+      - path: ../swift/RustProfileLogic.swift       # adapter: nui protocol → Rust
+      - path: ../generated/counter_logic.swift      # UniFFI bindings
+    dependencies:
+      - framework: ../CounterLogic.xcframework      # compiled Rust (static)
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nui.ProfileAppUIKit
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
   CounterAppUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -114,6 +136,18 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  ProfileAppUIKitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ProfileUITests
+    dependencies:
+      - target: ProfileAppUIKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
 schemes:
   CounterApp:
     build:
@@ -145,3 +179,13 @@ schemes:
       config: Debug
       targets:
         - ToggleAppUIKitUITests
+  ProfileAppUIKit:
+    build:
+      targets:
+        ProfileAppUIKit: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ProfileAppUIKitUITests
