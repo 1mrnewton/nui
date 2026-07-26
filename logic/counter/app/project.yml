@@ -1,16 +1,18 @@
 # XcodeGen spec for the nui demo apps.
 #
-# Four app targets share the same Rust logic crate (CounterLogic.xcframework):
-#   CounterApp      — counter, SwiftUI backend (CounterView.swift)
-#   CounterAppUIKit — counter, UIKit backend (CounterViewController.swift)
-#   ToggleAppUIKit  — if/else demo, UIKit backend (ToggleViewController.swift)
-#   ProfileAppUIKit — record-types demo, UIKit backend (ProfileViewController.swift)
+# Five app targets share the same Rust logic crate (CounterLogic.xcframework):
+#   CounterApp       — counter, SwiftUI backend (CounterView.swift)
+#   CounterAppUIKit  — counter, UIKit backend (CounterViewController.swift)
+#   ToggleAppUIKit   — if/else demo, UIKit backend (ToggleViewController.swift)
+#   ProfileAppUIKit  — record-types demo, UIKit backend (ProfileViewController.swift)
+#   TodoListAppUIKit — lists/for demo, UIKit backend (TodoListViewController.swift)
 #
 # Prerequisites (from the repo root):
 #   nui build examples/counter.nui -o CounterView.swift
 #   nui build examples/counter.nui --target uikit -o CounterViewController.swift
 #   nui build examples/toggle.nui --target uikit -o ToggleViewController.swift
 #   nui build examples/profile.nui --target uikit -o ProfileViewController.swift
+#   nui build examples/todos.nui --target uikit -o TodoListViewController.swift
 #   logic/counter/build-xcframework.sh
 # Then:
 #   cd logic/counter/app && xcodegen generate
@@ -100,6 +102,26 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  TodoListAppUIKit:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../../../TodoListViewController.swift # nui-generated UI (UIKit)
+      - path: ../swift/TodoListAppUIKit.swift       # app entry point (pure UIKit)
+      - path: ../swift/RustTodoListLogic.swift      # adapter: nui protocol → Rust
+      - path: ../generated/counter_logic.swift      # UniFFI bindings
+    dependencies:
+      - framework: ../CounterLogic.xcframework      # compiled Rust (static)
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nui.TodoListAppUIKit
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
   CounterAppUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -148,6 +170,18 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  TodoListAppUIKitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: TodoListUITests
+    dependencies:
+      - target: TodoListAppUIKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
 schemes:
   CounterApp:
     build:
@@ -189,3 +223,13 @@ schemes:
       config: Debug
       targets:
         - ProfileAppUIKitUITests
+  TodoListAppUIKit:
+    build:
+      targets:
+        TodoListAppUIKit: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - TodoListAppUIKitUITests

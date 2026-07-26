@@ -2,9 +2,9 @@
 //!
 //! nui owns the state; this crate owns the logic: pure, typed functions the
 //! UI calls through the generated bridge. The expected signatures — and a
-//! compile-time check that they exist — live in `generated.rs` (Counter) and
-//! `generated_toggle.rs` (Toggle), produced from the same `.nui` files as
-//! the UI, so the two sides cannot drift.
+//! compile-time check that they exist — live in the `generated*` modules,
+//! produced from the same `.nui` files as the UI, so the two sides cannot
+//! drift.
 //!
 //! Everything in this file is the actual business logic; there is no other
 //! handwritten code anywhere in the pipeline.
@@ -13,11 +13,13 @@ uniffi::setup_scaffolding!();
 
 mod generated;
 mod generated_profile;
+mod generated_todo_list;
 mod generated_toggle;
 
 // Record types come from the generated interface; only the fn bodies here
 // are handwritten.
 pub use generated_profile::ProfilePerson;
+pub use generated_todo_list::TodoListTodo;
 
 #[uniffi::export]
 pub fn counter_increment(count: i64) -> i64 {
@@ -57,6 +59,22 @@ pub fn profile_next(current: ProfilePerson) -> ProfilePerson {
     }
 }
 
+/// Pure: appending is a function of the current list — the new title comes
+/// from the length, so the same list in always gives the same list out.
+#[uniffi::export]
+pub fn todo_list_add(mut todos: Vec<TodoListTodo>) -> Vec<TodoListTodo> {
+    todos.push(TodoListTodo {
+        title: format!("Todo #{}", todos.len() + 1),
+    });
+    todos
+}
+
+#[uniffi::export]
+pub fn todo_list_clear(todos: Vec<TodoListTodo>) -> Vec<TodoListTodo> {
+    let _ = todos;
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +98,19 @@ mod tests {
     fn toggles() {
         assert!(toggle_toggle(false));
         assert!(!toggle_toggle(true));
+    }
+
+    #[test]
+    fn adds_numbered_todos_and_clears() {
+        let seeded = vec![TodoListTodo {
+            title: "Learn nui".into(),
+        }];
+        let two = todo_list_add(seeded);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[1].title, "Todo #2");
+        let three = todo_list_add(two);
+        assert_eq!(three[2].title, "Todo #3");
+        assert!(todo_list_clear(three).is_empty());
     }
 
     #[test]
