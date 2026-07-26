@@ -135,6 +135,43 @@ fn generates_every_view_kind() {
 }
 
 #[test]
+fn emits_native_if_else() {
+    let source = include_str!("../examples/toggle.nui");
+    let doc = compile(source).unwrap();
+    let generated = swift::generate(&doc);
+    for expected in [
+        "if store.state.showHint {",
+        r#"Text("Tap Help again to hide this hint.")"#,
+        "} else {",
+        r#"Text("(hint hidden)")"#,
+        // The action inside the tree is still collected into the store.
+        "public func toggleShowHint() {",
+        "state.showHint = await logic.toggle(value: state.showHint)",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected:?} in generated Swift:\n{generated}"
+        );
+    }
+}
+
+#[test]
+fn if_without_else_omits_the_else_block() {
+    let source_nui = r#"
+        component X {
+            state on: Bool = false
+            VStack {
+                if on { Text { text: "shown" } }
+            }
+        }
+    "#;
+    let doc = compile(source_nui).unwrap();
+    let generated = swift::generate(&doc);
+    assert!(generated.contains("if store.state.on {"), "{generated}");
+    assert!(!generated.contains("} else {"), "{generated}");
+}
+
+#[test]
 fn escapes_string_literals() {
     let doc = compile(r#"component X { Text { text: "say \"hi\"\n\{ok}" } }"#).unwrap();
     let source = swift::generate(&doc);

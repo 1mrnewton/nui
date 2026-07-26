@@ -124,6 +124,7 @@ docs/
   GRAMMAR.md  language reference: lexical rules, EBNF, views, semantics
 examples/
   counter.nui the "hello world" — a counter whose logic lives elsewhere
+  toggle.nui  `if` / `else` subtrees driven by a Bool state
 logic/
   counter/    the counter's Rust logic: pure fns, UniFFI bindings,
               build-xcframework.sh, host-app files (see its README)
@@ -149,9 +150,12 @@ tests/
 - [x] UIKit backend (experimental): the same IR transpiles to a pure
       UIKit view controller — native controls without SwiftUI, direct
       state application instead of diffing; same bridge, same UI tests
+- [x] `if` / `else` conditionals driven by `Bool` state — a native `if`
+      in SwiftUI, visibility-toggled branch containers in UIKit
+      (`examples/toggle.nui`)
 - [ ] Record types (`type Todo { ... }`) for `data = fetchData()`
 - [ ] Kotlin backend: the same file shape for Jetpack Compose
-- [ ] Language: `if`, `for … in`, component composition,
+- [ ] Language: `for … in`, component composition,
       named styles / design tokens
 - [ ] Hot reload: interpret the IR JSON in a dev shell app
 - [ ] More logic languages: Go, TypeScript (QuickJS/Hermes), C++

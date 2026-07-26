@@ -154,6 +154,15 @@ pub enum Node {
         modifiers: Vec<Modifier>,
     },
     Spacer,
+    /// Structural branch driven by a Bool state: exactly one branch is in
+    /// the layout at a time. Checked at compile time: `condition` names a
+    /// declared Bool state.
+    If {
+        condition: String,
+        then_children: Vec<Node>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        else_children: Vec<Node>,
+    },
 }
 
 /// Text with `{state}` interpolation resolved into segments, so runtimes

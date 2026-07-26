@@ -100,6 +100,34 @@ fn generates_every_view_kind() {
 }
 
 #[test]
+fn if_branches_become_hidden_toggled_containers() {
+    let source = include_str!("../examples/toggle.nui");
+    let doc = compile(source).unwrap();
+    let generated = uikit::generate(&doc);
+    for expected in [
+        // Both branches are stored containers inheriting the parent layout.
+        "private let branch2 = UIStackView()",
+        "private let branch4 = UIStackView()",
+        "branch2.axis = .vertical",
+        "branch2.spacing = 16",
+        // applyState toggles visibility; UIStackView drops hidden views
+        // from layout, so this is the whole conditional mechanism.
+        "branch2.isHidden = !store.state.showHint",
+        "branch4.isHidden = store.state.showHint",
+        // Branch children still get their styles.
+        ".textColor = .secondaryLabel",
+        ".textColor = .systemGray",
+        // The action inside the tree is still collected into the store.
+        "public func toggleShowHint() {",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected:?} in generated UIKit source:\n{generated}"
+        );
+    }
+}
+
+#[test]
 fn dynamic_button_labels_update_in_apply_state() {
     let source_nui = r#"
         component X {

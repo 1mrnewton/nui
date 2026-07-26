@@ -251,8 +251,50 @@ fn lower_node(ctx: &Ctx, node: &ast::NodeExpr) -> Result<ir::Node> {
 fn lower_children(ctx: &Ctx, node: &ast::NodeExpr) -> Result<Vec<ir::Node>> {
     node.children
         .iter()
-        .map(|child| lower_node(ctx, child))
+        .map(|child| lower_child(ctx, child))
         .collect()
+}
+
+fn lower_child(ctx: &Ctx, child: &ast::ChildExpr) -> Result<ir::Node> {
+    match child {
+        ast::ChildExpr::Node(node) => lower_node(ctx, node),
+        ast::ChildExpr::If(if_expr) => {
+            let condition = &if_expr.condition;
+            let Some(ty) = ctx.state_types.get(condition).copied() else {
+                return Err(Error::new(
+                    format!(
+                        "unknown state `{condition}`; an `if` condition names a \
+                         declared Bool state"
+                    ),
+                    if_expr.span.line,
+                    if_expr.span.col,
+                ));
+            };
+            if ty != ir::Type::Bool {
+                return Err(Error::new(
+                    format!(
+                        "`if {condition}` needs a Bool state, but `{condition}` is {}",
+                        type_name(ty)
+                    ),
+                    if_expr.span.line,
+                    if_expr.span.col,
+                ));
+            }
+            Ok(ir::Node::If {
+                condition: condition.clone(),
+                then_children: if_expr
+                    .then_children
+                    .iter()
+                    .map(|child| lower_child(ctx, child))
+                    .collect::<Result<Vec<_>>>()?,
+                else_children: if_expr
+                    .else_children
+                    .iter()
+                    .map(|child| lower_child(ctx, child))
+                    .collect::<Result<Vec<_>>>()?,
+            })
+        }
+    }
 }
 
 fn lower_styles(node: &ast::NodeExpr) -> Result<Vec<ir::Modifier>> {
@@ -327,8 +369,8 @@ fn no_children(kind: &str, node: &ast::NodeExpr) -> Result<()> {
     match node.children.first() {
         Some(child) => Err(Error::new(
             format!("`{kind}` does not take children"),
-            child.span.line,
-            child.span.col,
+            child.span().line,
+            child.span().col,
         )),
         None => Ok(()),
     }

@@ -118,9 +118,32 @@ fn collect_bindings(node: &ir::Node, out: &mut Vec<String>) {
                 collect_bindings(child, out);
             }
         }
+        ir::Node::If {
+            then_children,
+            else_children,
+            ..
+        } => {
+            for child in then_children.iter().chain(else_children) {
+                collect_bindings(child, out);
+            }
+        }
         _ => {}
     }
 }
+
+/// Layout context an `if` branch inherits from its enclosing stack, so
+/// branch children are laid out exactly like their siblings.
+struct StackCtx {
+    axis: &'static str,
+    alignment: &'static str,
+    spacing: Option<f64>,
+}
+
+const ROOT_CTX: StackCtx = StackCtx {
+    axis: "vertical",
+    alignment: ".center",
+    spacing: None,
+};
 
 fn emit_view_controller(w: &mut Writer, component: &ir::Component, actions: &ActionMethods) {
     let name = &component.name;
@@ -134,7 +157,9 @@ fn emit_view_controller(w: &mut Writer, component: &ir::Component, actions: &Act
         apply: Vec::new(),
         next_id: 0,
     };
-    let root = vc.emit_node(&component.root);
+    let mut root_names = vc.emit_node(&component.root, &ROOT_CTX);
+    debug_assert_eq!(root_names.len(), 1, "the root is always a single view");
+    let root = root_names.remove(0);
 
     w.line("// MARK: - View Controller");
     w.blank();
@@ -231,7 +256,10 @@ impl Vc<'_> {
         }
     }
 
-    fn emit_node(&mut self, node: &ir::Node) -> String {
+    /// Emits one IR node; returns the view name(s) the parent should add.
+    /// Every node yields exactly one view except `if`, which yields a
+    /// container per branch (at most one is visible at a time).
+    fn emit_node(&mut self, node: &ir::Node, parent: &StackCtx) -> Vec<String> {
         match node {
             ir::Node::Text { content, modifiers } => {
                 self.begin_block();
@@ -247,7 +275,7 @@ impl Vc<'_> {
                 }
                 self.build.line(format!("{name}.numberOfLines = 0"));
                 self.style_lines(&name, modifiers, "textColor", Some("font"));
-                self.wrap_padding(name, modifiers)
+                vec![self.wrap_padding(name, modifiers)]
             }
             ir::Node::Button {
                 label,
@@ -277,7 +305,7 @@ impl Vc<'_> {
                     self.build.line("})");
                 }
                 self.style_lines(&name, modifiers, "tintColor", Some("titleLabel?.font"));
-                self.wrap_padding(name, modifiers)
+                vec![self.wrap_padding(name, modifiers)]
             }
             ir::Node::TextField {
                 binding,
@@ -310,7 +338,7 @@ impl Vc<'_> {
                     "if {name}.text != store.state.{binding} {{ {name}.text = store.state.{binding} }}"
                 ));
                 self.style_lines(&name, modifiers, "textColor", Some("font"));
-                self.wrap_padding(name, modifiers)
+                vec![self.wrap_padding(name, modifiers)]
             }
             ir::Node::Image { source, modifiers } => {
                 self.begin_block();
@@ -321,18 +349,18 @@ impl Vc<'_> {
                 ));
                 self.build.line(format!("{name}.contentMode = .scaleAspectFit"));
                 self.style_lines(&name, modifiers, "tintColor", None);
-                self.wrap_padding(name, modifiers)
+                vec![self.wrap_padding(name, modifiers)]
             }
             ir::Node::VStack {
                 spacing,
                 children,
                 modifiers,
-            } => self.stack("vertical", ".center", *spacing, children, modifiers),
+            } => vec![self.stack("vertical", ".center", *spacing, children, modifiers)],
             ir::Node::HStack {
                 spacing,
                 children,
                 modifiers,
-            } => self.stack("horizontal", ".center", *spacing, children, modifiers),
+            } => vec![self.stack("horizontal", ".center", *spacing, children, modifiers)],
             ir::Node::List {
                 children,
                 modifiers,
@@ -340,7 +368,7 @@ impl Vc<'_> {
                 let name = self.stack("vertical", ".fill", None, children, modifiers);
                 self.build
                     .line("// nui: List renders as a plain stack for now (UITableView mapping is TODO).");
-                name
+                vec![name]
             }
             ir::Node::Spacer => {
                 self.begin_block();
@@ -352,22 +380,75 @@ impl Vc<'_> {
                 self.build.line(format!(
                     "{name}.setContentHuggingPriority(.defaultLow, for: .vertical)"
                 ));
-                name
+                vec![name]
+            }
+            ir::Node::If {
+                condition,
+                then_children,
+                else_children,
+            } => {
+                let mut names = vec![self.branch(condition, false, then_children, parent)];
+                if !else_children.is_empty() {
+                    names.push(self.branch(condition, true, else_children, parent));
+                }
+                names
             }
         }
     }
 
+    /// One `if` branch becomes a stored container stack that inherits the
+    /// parent's layout; `applyState()` toggles `isHidden`, and UIStackView
+    /// removes hidden arranged subviews from layout — no diffing needed.
+    fn branch(
+        &mut self,
+        condition: &str,
+        negated: bool,
+        children: &[ir::Node],
+        parent: &StackCtx,
+    ) -> String {
+        let child_names: Vec<String> = children
+            .iter()
+            .flat_map(|child| self.emit_node(child, parent))
+            .collect();
+        self.begin_block();
+        let name = format!("branch{}", self.next());
+        self.decls
+            .push(format!("private let {name} = UIStackView()"));
+        for child in &child_names {
+            self.build
+                .line(format!("{name}.addArrangedSubview({child})"));
+        }
+        self.build.line(format!("{name}.axis = .{}", parent.axis));
+        self.build
+            .line(format!("{name}.alignment = {}", parent.alignment));
+        if let Some(spacing) = parent.spacing {
+            self.build
+                .line(format!("{name}.spacing = {}", number(spacing)));
+        }
+        self.apply.push(if negated {
+            format!("{name}.isHidden = store.state.{condition}")
+        } else {
+            format!("{name}.isHidden = !store.state.{condition}")
+        });
+        name
+    }
+
     fn stack(
         &mut self,
-        axis: &str,
-        alignment: &str,
+        axis: &'static str,
+        alignment: &'static str,
         spacing: Option<f64>,
         children: &[ir::Node],
         modifiers: &[ir::Modifier],
     ) -> String {
+        let ctx = StackCtx {
+            axis,
+            alignment,
+            spacing,
+        };
         let child_names: Vec<String> = children
             .iter()
-            .map(|child| self.emit_node(child))
+            .flat_map(|child| self.emit_node(child, &ctx))
             .collect();
         self.begin_block();
         let name = format!("stack{}", self.next());

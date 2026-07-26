@@ -1,7 +1,8 @@
 //! Recursive-descent parser. See docs/GRAMMAR.md for the grammar.
 
 use crate::ast::{
-    Component, Document, Expr, ExprKind, FnDecl, NodeExpr, Param, Prop, Span, StateDecl,
+    ChildExpr, Component, Document, Expr, ExprKind, FnDecl, IfExpr, NodeExpr, Param, Prop, Span,
+    StateDecl,
 };
 use crate::error::{Error, Result};
 use crate::lexer::{lex, Token, TokenKind};
@@ -231,6 +232,7 @@ impl Parser {
                     TokenKind::Comma => {
                         self.bump();
                     }
+                    TokenKind::If => children.push(ChildExpr::If(self.if_expr()?)),
                     TokenKind::Ident(_) if self.peek2_kind() == &TokenKind::Colon => {
                         let (key, key_span) = self.expect_ident("a property name")?;
                         self.bump(); // colon
@@ -248,7 +250,7 @@ impl Parser {
                             }),
                         }
                     }
-                    TokenKind::Ident(_) => children.push(self.node()?),
+                    TokenKind::Ident(_) => children.push(ChildExpr::Node(self.node()?)),
                     other => {
                         return Err(self.error_here(format!(
                             "expected a property (`name: value`) or a child view \
@@ -274,6 +276,68 @@ impl Parser {
             children,
             span,
         })
+    }
+
+    /// Parses `if state { children } [else { children }]` in child position.
+    fn if_expr(&mut self) -> Result<IfExpr> {
+        let span = self.span();
+        self.expect(TokenKind::If, "`if`")?;
+        let (condition, _) = self.expect_ident("a Bool state name after `if`")?;
+        self.expect(TokenKind::LBrace, "`{` to open the `if` branch")?;
+        let then_children = self.child_list("if")?;
+        let mut else_children = Vec::new();
+        if self.peek_kind() == &TokenKind::Else {
+            self.bump();
+            if self.peek_kind() == &TokenKind::If {
+                return Err(self.error_here(
+                    "`else if` is not supported yet — nest an `if` inside `else { ... }`",
+                ));
+            }
+            self.expect(TokenKind::LBrace, "`{` to open the `else` branch")?;
+            else_children = self.child_list("else")?;
+        }
+        Ok(IfExpr {
+            condition,
+            then_children,
+            else_children,
+            span,
+        })
+    }
+
+    /// Parses children until `}` — views and nested `if`s only; branches
+    /// carry no properties of their own.
+    fn child_list(&mut self, context: &str) -> Result<Vec<ChildExpr>> {
+        let mut children = Vec::new();
+        loop {
+            match self.peek_kind() {
+                TokenKind::RBrace => {
+                    self.bump();
+                    return Ok(children);
+                }
+                TokenKind::Eof => {
+                    return Err(self.error_here(format!(
+                        "expected `}}` to close the `{context}` branch"
+                    )));
+                }
+                TokenKind::Comma => {
+                    self.bump();
+                }
+                TokenKind::If => children.push(ChildExpr::If(self.if_expr()?)),
+                TokenKind::Ident(_) if self.peek2_kind() == &TokenKind::Colon => {
+                    return Err(self.error_here(format!(
+                        "an `{context}` branch holds child views only — \
+                         properties belong on the views inside"
+                    )));
+                }
+                TokenKind::Ident(_) => children.push(ChildExpr::Node(self.node()?)),
+                other => {
+                    return Err(self.error_here(format!(
+                        "expected a child view or `}}` in the `{context}` branch, found {}",
+                        other.describe()
+                    )));
+                }
+            }
+        }
     }
 
     /// Parses the `{ name: value ... }` block after `style:`.
@@ -459,11 +523,75 @@ mod tests {
         assert_eq!(component.root.props[0].name, "spacing");
         assert_eq!(component.root.styles.len(), 1);
         assert_eq!(component.root.styles[0].name, "padding");
-        let button = &component.root.children[1];
+        let ChildExpr::Node(button) = &component.root.children[1] else {
+            panic!("expected a view child");
+        };
         assert_eq!(button.props[0].name, "label");
         let action = &button.props[1];
         assert_eq!(action.name, "on_click");
         assert!(matches!(&action.value.kind, ExprKind::Assign { target, .. } if target == "title"));
+    }
+
+    #[test]
+    fn parses_if_else_in_child_position() {
+        let doc = parse(
+            r#"
+            component X {
+                state on: Bool = false
+                VStack {
+                    if on {
+                        Text { text: "yes" }
+                        Text { text: "still yes" }
+                    } else {
+                        Text { text: "no" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let ChildExpr::If(if_expr) = &doc.component.root.children[0] else {
+            panic!("expected an if child");
+        };
+        assert_eq!(if_expr.condition, "on");
+        assert_eq!(if_expr.then_children.len(), 2);
+        assert_eq!(if_expr.else_children.len(), 1);
+    }
+
+    #[test]
+    fn else_if_gets_a_helpful_error() {
+        let err = parse(
+            r#"
+            component X {
+                state on: Bool = false
+                VStack {
+                    if on { Spacer } else if on { Spacer }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("nest an `if`"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn properties_inside_branches_are_rejected() {
+        let err = parse(
+            r#"
+            component X {
+                state on: Bool = false
+                VStack {
+                    if on { spacing: 4 }
+                }
+            }
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("child views only"),
+            "got: {}",
+            err.message
+        );
     }
 
     #[test]

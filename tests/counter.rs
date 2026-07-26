@@ -206,6 +206,62 @@ fn rejects_unknown_style_property() {
 }
 
 #[test]
+fn compiles_toggle_example_with_if() {
+    let source = include_str!("../examples/toggle.nui");
+    let doc = compile(source).expect("toggle example should compile");
+    let ir::Node::VStack { children, .. } = &doc.component.root else {
+        panic!("expected VStack root");
+    };
+    let ir::Node::If {
+        condition,
+        then_children,
+        else_children,
+    } = &children[1]
+    else {
+        panic!("expected an if node, got {:?}", children[1]);
+    };
+    assert_eq!(condition, "showHint");
+    assert_eq!(then_children.len(), 1);
+    assert_eq!(else_children.len(), 1);
+
+    // The if node survives a JSON round-trip like everything else.
+    let json = serde_json::to_string(&doc).unwrap();
+    let back: ir::Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc, back);
+}
+
+#[test]
+fn rejects_unknown_if_condition() {
+    let source = r#"
+        component X {
+            VStack {
+                if missing { Spacer }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(err.message.contains("missing"), "got: {}", err.message);
+}
+
+#[test]
+fn rejects_non_bool_if_condition() {
+    let source = r#"
+        component X {
+            state count: Int = 0
+            VStack {
+                if count { Spacer }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("needs a Bool state") && err.message.contains("is Int"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
 fn literal_arguments_are_allowed() {
     let source = r#"
         component X {

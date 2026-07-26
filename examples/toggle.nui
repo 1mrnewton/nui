@@ -1,0 +1,36 @@
+// toggle.nui — conditional subtrees driven by Bool state.
+//
+// `if` is structural: exactly one branch is in the layout at a time, and
+// the condition is always a declared Bool state. Anything smarter than a
+// Bool (comparisons, expressions) belongs in the logic layer — here the
+// backend flips the flag with a pure `toggle` function.
+
+component Toggle {
+    state showHint: Bool = false
+
+    logic {
+        fn toggle(value: Bool) -> Bool
+    }
+
+    VStack {
+        spacing: 16
+        style: { padding: 24 }
+
+        Button {
+            label: "Help"
+            on_click: { showHint = toggle(showHint) }
+        }
+
+        if showHint {
+            Text {
+                text: "Tap Help again to hide this hint."
+                style: { color: secondary }
+            }
+        } else {
+            Text {
+                text: "(hint hidden)"
+                style: { color: gray }
+            }
+        }
+    }
+}

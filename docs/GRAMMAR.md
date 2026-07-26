@@ -45,8 +45,8 @@ component Counter {
 - **Whitespace** is insignificant. Newlines are just whitespace.
 - **Comments**: `//` to end of line.
 - **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`.
-- **Keywords**: `component`, `state`, `logic`, `fn`, `true`, `false`.
-  (`event` is reserved and produces a migration error. `style` and
+- **Keywords**: `component`, `state`, `logic`, `fn`, `if`, `else`, `true`,
+  `false`. (`event` is reserved and produces a migration error. `style` and
   `on_click` are ordinary identifiers with special meaning as view keys.)
 - **Numbers**: `123`, `-4`, `2.5`. A `.` only starts a fraction when a digit
   follows; `->` is the arrow.
@@ -68,7 +68,9 @@ param       = IDENT ":" type ;
 type        = "Int" | "Float" | "Bool" | "String" ;
 
 node        = IDENT [ "{" { entry } "}" ] ;
-entry       = styleBlock | actionBlock | property | node ;
+entry       = styleBlock | actionBlock | property | child ;
+child       = node | ifBranch ;
+ifBranch    = "if" IDENT "{" { child } "}" [ "else" "{" { child } "}" ] ;
 property    = IDENT ":" expr ;
 styleBlock  = "style" ":" "{" { styleProp } "}" ;
 styleProp   = IDENT ":" expr ;
@@ -95,6 +97,11 @@ Notes:
   state references or literals — never nested calls. Actions are fully
   type-checked: the function must be declared, argument types must match
   the parameters, and the return type must match the assigned state.
+- `if` appears in child position and branches hold child views only. The
+  condition is always a declared `Bool` state — no comparisons or boolean
+  expressions in the UI; anything smarter than a flag is computed in the
+  logic layer (see `examples/toggle.nui`). `else if` is not supported yet;
+  nest an `if` inside `else { ... }`.
 
 ## Views (v0)
 
@@ -133,6 +140,10 @@ Every view except `Spacer` also accepts one `style:` block.
   layer, so both platforms behave identically.
 - `TextField` writes its text into the bound `String` state directly: local,
   UI-owned mutation with no computation involved.
+- `if` is structural: exactly one branch is in the layout at a time,
+  driven by a `Bool` state. SwiftUI renders it as a native `if` in the
+  view builder; UIKit renders each branch as a container whose visibility
+  tracks the state.
 - Everything is checked at compile time: state references, function
   references, property names, argument types, and return types. A `.nui`
   file that compiles cannot make an ill-typed call at runtime.
@@ -141,7 +152,7 @@ Every view except `Spacer` also accepts one `style:` block.
 
 - Record types (`type Todo { title: String, done: Bool }`) usable as state
   and in logic signatures — needed for `data = fetchData()`
-- `if` / `else` — conditional subtrees driven by `Bool` state
+- `else if` chains (nest an `if` inside `else { ... }` for now)
 - `for x in items` — dynamic `List` content over collection state
 - Component composition (`component Row { ... }` used inside another view)
 - More action keys (`on_submit:` for `TextField`, `on_appear:`) and

@@ -84,6 +84,15 @@ fn collect_actions(node: &ir::Node, f: &mut impl FnMut(&ir::Action)) {
                 collect_actions(child, f);
             }
         }
+        ir::Node::If {
+            then_children,
+            else_children,
+            ..
+        } => {
+            for child in then_children.iter().chain(else_children) {
+                collect_actions(child, f);
+            }
+        }
         _ => {}
     }
 }
@@ -344,6 +353,29 @@ fn emit_node(w: &mut Writer, node: &ir::Node, actions: &ActionMethods) {
             emit_container_modifiers(w, modifiers);
         }
         ir::Node::Spacer => w.line("Spacer()"),
+        ir::Node::If {
+            condition,
+            then_children,
+            else_children,
+        } => {
+            w.line(format!("if store.state.{condition} {{"));
+            w.indented(|w| {
+                for child in then_children {
+                    emit_node(w, child, actions);
+                }
+            });
+            if else_children.is_empty() {
+                w.line("}");
+            } else {
+                w.line("} else {");
+                w.indented(|w| {
+                    for child in else_children {
+                        emit_node(w, child, actions);
+                    }
+                });
+                w.line("}");
+            }
+        }
     }
 }
 

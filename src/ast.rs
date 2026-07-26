@@ -60,13 +60,40 @@ pub struct Param {
 /// Everything in a view body is keyed: `prop: value` entries land in
 /// `props` (an `on_click: { ... }` action block is a prop whose value is
 /// an [`ExprKind::Assign`]), `style: { ... }` entries land in `styles`,
-/// and capitalized `Name { ... }` entries land in `children`.
+/// and capitalized `Name { ... }` or `if ... { ... }` entries land in
+/// `children`.
 #[derive(Debug, Clone)]
 pub struct NodeExpr {
     pub name: String,
     pub props: Vec<Prop>,
     pub styles: Vec<Prop>,
-    pub children: Vec<NodeExpr>,
+    pub children: Vec<ChildExpr>,
+    pub span: Span,
+}
+
+/// One entry in child position: a view, or an `if` over a Bool state.
+#[derive(Debug, Clone)]
+pub enum ChildExpr {
+    Node(NodeExpr),
+    If(IfExpr),
+}
+
+impl ChildExpr {
+    pub fn span(&self) -> Span {
+        match self {
+            ChildExpr::Node(node) => node.span,
+            ChildExpr::If(if_expr) => if_expr.span,
+        }
+    }
+}
+
+/// `if showHint { ... } else { ... }` — the condition is a Bool state
+/// name (validated during lowering); the else branch may be empty.
+#[derive(Debug, Clone)]
+pub struct IfExpr {
+    pub condition: String,
+    pub then_children: Vec<ChildExpr>,
+    pub else_children: Vec<ChildExpr>,
     pub span: Span,
 }
 
