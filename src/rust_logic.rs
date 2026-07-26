@@ -11,6 +11,12 @@
 //! pub fn counter_increment(count: i64) -> i64 { ... }
 //! ```
 //!
+//! Record types declared with `type Name { ... }` become UniFFI `Record`
+//! structs here, also prefixed with the component name (`ProfilePerson`)
+//! so the UniFFI-generated Swift never collides with the UI-side struct
+//! (`Person`) compiled into the same app target. The generated bridge
+//! converts between the two.
+//!
 //! The generated file contains a compile-time signature check: if the crate
 //! is missing a function, or a signature drifts from the `.nui` declaration,
 //! `cargo build` fails.
@@ -47,11 +53,45 @@ pub fn generate(doc: &ir::Document) -> String {
             out,
             "//     pub fn {}({}) -> {}",
             rust_fn_name(&prefix, &function.name),
-            rust_params(function),
-            rust_type(function.returns)
+            rust_params(name, function),
+            rust_type(name, &function.returns)
         );
     }
+    if !component.types.is_empty() {
+        let _ = writeln!(out, "//");
+        let _ = writeln!(
+            out,
+            "// Re-export the record types next to the `mod` declaration so the"
+        );
+        let _ = writeln!(out, "// implementations can use them:");
+        let _ = writeln!(out, "//");
+        let _ = writeln!(out, "//     pub use <this module>::*;");
+    }
     out.push('\n');
+
+    for record in &component.types {
+        let _ = writeln!(
+            out,
+            "/// The `{}` record from the `.nui` file, prefixed with the component"
+        , record.name);
+        let _ = writeln!(
+            out,
+            "/// name so the UniFFI-generated Swift never collides with the UI-side"
+        );
+        let _ = writeln!(out, "/// struct of the same name.");
+        let _ = writeln!(out, "#[derive(Debug, Clone, PartialEq, uniffi::Record)]");
+        let _ = writeln!(out, "pub struct {} {{", rust_record_name(name, &record.name));
+        for field in &record.fields {
+            let _ = writeln!(
+                out,
+                "    pub {}: {},",
+                snake_case(&field.name),
+                rust_type(name, &field.ty)
+            );
+        }
+        let _ = writeln!(out, "}}");
+        out.push('\n');
+    }
 
     let _ = writeln!(
         out,
@@ -61,16 +101,16 @@ pub fn generate(doc: &ir::Document) -> String {
     let _ = writeln!(out, "#[allow(dead_code)]");
     let _ = writeln!(out, "fn _nui_check_logic_signatures() {{");
     for function in &component.functions {
-        let param_types: Vec<&str> = function
+        let param_types: Vec<String> = function
             .params
             .iter()
-            .map(|param| rust_type(param.ty))
+            .map(|param| rust_type(name, &param.ty))
             .collect();
         let _ = writeln!(
             out,
             "    let _: fn({}) -> {} = crate::{};",
             param_types.join(", "),
-            rust_type(function.returns),
+            rust_type(name, &function.returns),
             rust_fn_name(&prefix, &function.name)
         );
     }
@@ -84,21 +124,34 @@ pub fn rust_fn_name(component_prefix: &str, function: &str) -> String {
     format!("{component_prefix}_{}", snake_case(function))
 }
 
-fn rust_params(function: &ir::FunctionDecl) -> String {
+/// `Profile` + `Person` → `ProfilePerson`: the Rust-side record name,
+/// prefixed so UniFFI's Swift output never collides with the UI struct.
+pub fn rust_record_name(component: &str, record: &str) -> String {
+    format!("{component}{record}")
+}
+
+fn rust_params(component: &str, function: &ir::FunctionDecl) -> String {
     function
         .params
         .iter()
-        .map(|param| format!("{}: {}", snake_case(&param.name), rust_type(param.ty)))
+        .map(|param| {
+            format!(
+                "{}: {}",
+                snake_case(&param.name),
+                rust_type(component, &param.ty)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-fn rust_type(ty: ir::Type) -> &'static str {
+pub fn rust_type(component: &str, ty: &ir::Type) -> String {
     match ty {
-        ir::Type::Int => "i64",
-        ir::Type::Float => "f64",
-        ir::Type::Bool => "bool",
-        ir::Type::String => "String",
+        ir::Type::Int => "i64".into(),
+        ir::Type::Float => "f64".into(),
+        ir::Type::Bool => "bool".into(),
+        ir::Type::String => "String".into(),
+        ir::Type::Record(name) => rust_record_name(component, name),
     }
 }
 

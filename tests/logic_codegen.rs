@@ -89,3 +89,66 @@ fn non_int_types_pass_through_without_conversion() {
     let bridge = swift_bridge::generate(&doc);
     assert!(bridge.contains("xToggle(on: on)"), "{bridge}");
 }
+
+#[test]
+fn records_become_prefixed_uniffi_structs() {
+    let source = include_str!("../examples/profile.nui");
+    let doc = compile(source).unwrap();
+    let rust = rust_logic::generate(&doc);
+    for expected in [
+        "#[derive(Debug, Clone, PartialEq, uniffi::Record)]",
+        "pub struct ProfilePerson {",
+        "    pub name: String,",
+        "    pub bio: String,",
+        "//     pub fn profile_next(current: ProfilePerson) -> ProfilePerson",
+        "let _: fn(ProfilePerson) -> ProfilePerson = crate::profile_next;",
+    ] {
+        assert!(
+            rust.contains(expected),
+            "missing {expected:?} in generated Rust:\n{rust}"
+        );
+    }
+}
+
+#[test]
+fn bridge_converts_records_field_by_field() {
+    let source = include_str!("../examples/profile.nui");
+    let doc = compile(source).unwrap();
+    let bridge = swift_bridge::generate(&doc);
+    for expected in [
+        "func next(current: Person) async -> Person {",
+        // UI struct → prefixed UniFFI record on the way in...
+        "let result = profileNext(current: ProfilePerson(name: current.name, bio: current.bio))",
+        // ...and back on the way out.
+        "return Person(name: result.name, bio: result.bio)",
+    ] {
+        assert!(
+            bridge.contains(expected),
+            "missing {expected:?} in generated bridge:\n{bridge}"
+        );
+    }
+}
+
+#[test]
+fn record_int_fields_convert_at_the_ffi_boundary() {
+    let doc = compile(
+        r#"
+        type Score { points: Int }
+        component Game {
+            state score: Score = Score(points: 0)
+            logic { fn bump(score: Score) -> Score }
+            Button { label: "+", on_click: { score = bump(score) } }
+        }
+        "#,
+    )
+    .unwrap();
+    let bridge = swift_bridge::generate(&doc);
+    assert!(
+        bridge.contains("GameScore(points: Int64(score.points))"),
+        "{bridge}"
+    );
+    assert!(
+        bridge.contains("return Score(points: Int(result.points))"),
+        "{bridge}"
+    );
+}

@@ -4,13 +4,17 @@
 //! For `Counter` this emits `RustCounterLogic: CounterLogic`, one method per
 //! declared logic function, each calling the UniFFI-generated free function
 //! (`counter_increment` in Rust → `counterIncrement` in Swift) with the
-//! `Int ↔ Int64` conversions handled. With this file generated, the only
-//! handwritten code anywhere is the function bodies in the Rust crate.
+//! `Int ↔ Int64` conversions handled. Record types cross the boundary by
+//! field-wise conversion between the UI struct (`Person`) and the
+//! component-prefixed UniFFI record (`ProfilePerson`). With this file
+//! generated, the only handwritten code anywhere is the function bodies in
+//! the Rust crate.
 
 use std::fmt::Write as _;
 
 use crate::ir;
-use crate::rust_logic::{rust_fn_name, snake_case};
+use crate::rust_logic::{rust_fn_name, rust_record_name, snake_case};
+use crate::swift::{record_decl, swift_type};
 
 pub fn generate(doc: &ir::Document) -> String {
     let component = &doc.component;
@@ -30,26 +34,35 @@ pub fn generate(doc: &ir::Document) -> String {
         let params: Vec<String> = function
             .params
             .iter()
-            .map(|param| format!("{}: {}", param.name, swift_type(param.ty)))
+            .map(|param| format!("{}: {}", param.name, swift_type(&param.ty)))
             .collect();
         let _ = writeln!(
             out,
             "    func {}({}) async -> {} {{",
             function.name,
             params.join(", "),
-            swift_type(function.returns)
+            swift_type(&function.returns)
         );
         let args: Vec<String> = function
             .params
             .iter()
-            .map(|param| format!("{}: {}", param.name, to_ffi(param)))
+            .map(|param| format!("{}: {}", param.name, to_ffi(component, param)))
             .collect();
         let call = format!(
             "{}({})",
             uniffi_swift_name(&prefix, &function.name),
             args.join(", ")
         );
-        let _ = writeln!(out, "        {}", from_ffi(function.returns, &call));
+        if let ir::Type::Record(record_name) = &function.returns {
+            let _ = writeln!(out, "        let result = {call}");
+            let _ = writeln!(
+                out,
+                "        return {}",
+                record_from_ffi(component, record_name, "result")
+            );
+        } else {
+            let _ = writeln!(out, "        {}", from_ffi(&function.returns, &call));
+        }
         let _ = writeln!(out, "    }}");
     }
     let _ = writeln!(out, "}}");
@@ -59,7 +72,11 @@ pub fn generate(doc: &ir::Document) -> String {
 
 /// Rust `counter_fetch_data` → UniFFI-generated Swift `counterFetchData`.
 fn uniffi_swift_name(prefix: &str, function: &str) -> String {
-    let snake = rust_fn_name(prefix, function);
+    lower_camel(&rust_fn_name(prefix, function))
+}
+
+/// `full_name` → `fullName` (how UniFFI names record fields in Swift).
+fn lower_camel(snake: &str) -> String {
     let mut out = String::new();
     let mut upper_next = false;
     for c in snake.chars() {
@@ -75,27 +92,64 @@ fn uniffi_swift_name(prefix: &str, function: &str) -> String {
     out
 }
 
-fn swift_type(ty: ir::Type) -> &'static str {
-    match ty {
-        ir::Type::Int => "Int",
-        ir::Type::Float => "Double",
-        ir::Type::Bool => "Bool",
-        ir::Type::String => "String",
-    }
+/// The Swift-side label of a record field in the UniFFI-generated record:
+/// the declared name, snake_cased by the Rust backend, camelized back by
+/// UniFFI — an identity for conventional camelCase field names.
+fn ffi_field_label(name: &str) -> String {
+    lower_camel(&snake_case(name))
 }
 
-/// nui Swift value → FFI value (only Int needs widening to Int64).
-fn to_ffi(param: &ir::Param) -> String {
-    match param.ty {
+/// nui Swift value → FFI value: Int widens to Int64; records convert
+/// field-wise into the component-prefixed UniFFI record.
+fn to_ffi(component: &ir::Component, param: &ir::Param) -> String {
+    match &param.ty {
         ir::Type::Int => format!("Int64({})", param.name),
+        ir::Type::Record(record_name) => {
+            let record = record_decl(component, record_name);
+            let fields: Vec<String> = record
+                .fields
+                .iter()
+                .map(|field| {
+                    let access = format!("{}.{}", param.name, field.name);
+                    let value = match field.ty {
+                        ir::Type::Int => format!("Int64({access})"),
+                        _ => access,
+                    };
+                    format!("{}: {}", ffi_field_label(&field.name), value)
+                })
+                .collect();
+            format!(
+                "{}({})",
+                rust_record_name(&component.name, record_name),
+                fields.join(", ")
+            )
+        }
         _ => param.name.clone(),
     }
 }
 
-/// FFI result → nui Swift value.
-fn from_ffi(ty: ir::Type, call: &str) -> String {
+/// FFI result → nui Swift value (primitives).
+fn from_ffi(ty: &ir::Type, call: &str) -> String {
     match ty {
         ir::Type::Int => format!("Int({call})"),
         _ => call.to_string(),
     }
+}
+
+/// FFI record result → UI struct, field-wise.
+fn record_from_ffi(component: &ir::Component, record_name: &str, source: &str) -> String {
+    let record = record_decl(component, record_name);
+    let fields: Vec<String> = record
+        .fields
+        .iter()
+        .map(|field| {
+            let access = format!("{source}.{}", ffi_field_label(&field.name));
+            let value = match field.ty {
+                ir::Type::Int => format!("Int({access})"),
+                _ => access,
+            };
+            format!("{}: {}", field.name, value)
+        })
+        .collect();
+    format!("{record_name}({})", fields.join(", "))
 }

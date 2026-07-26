@@ -37,9 +37,21 @@ pub struct Document {
 #[serde(rename_all = "camelCase")]
 pub struct Component {
     pub name: String,
+    /// Record types declared with `type Name { field: Type ... }`. Fields
+    /// are primitives (checked during lowering); nesting comes later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<RecordDecl>,
     pub state: Vec<StateDecl>,
     pub functions: Vec<FunctionDecl>,
     pub root: Node,
+}
+
+/// A declared record type: named, ordered, primitively-typed fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordDecl {
+    pub name: String,
+    pub fields: Vec<Param>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,16 +63,20 @@ pub struct StateDecl {
     pub initial: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Primitives serialize as `"int"`; records as `{"record": "Person"}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Type {
     Int,
     Float,
     Bool,
     String,
+    /// A declared record type, by name.
+    Record(String),
 }
 
-/// A literal value. Untagged in JSON: `0`, `1.5`, `true`, `"hi"`.
+/// A literal value. Untagged in JSON: `0`, `1.5`, `true`, `"hi"`; a record
+/// value is an array of `{name, value}` pairs in field-declaration order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Value {
@@ -68,6 +84,14 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     String(String),
+    Record(Vec<FieldValue>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldValue {
+    pub name: String,
+    pub value: Value,
 }
 
 /// A declared logic function, implemented by the backend.
@@ -100,7 +124,8 @@ pub struct Action {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CallArg {
-    /// Pass the current value of a state.
+    /// Pass the current value of a state, or a record field of one
+    /// (`name` may be a dotted path like `person.name`).
     State { name: String },
     /// Pass a literal.
     Value { value: Value },
@@ -156,7 +181,7 @@ pub enum Node {
     Spacer,
     /// Structural branch driven by a Bool state: exactly one branch is in
     /// the layout at a time. Checked at compile time: `condition` names a
-    /// declared Bool state.
+    /// declared Bool state (or a Bool record field, as a dotted path).
     If {
         condition: String,
         then_children: Vec<Node>,
@@ -175,6 +200,8 @@ pub struct TextContent(pub Vec<TextSegment>);
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TextSegment {
     Literal { value: String },
+    /// A state reference; `name` may be a dotted path into a record
+    /// (`person.name`). Always resolves to a primitive (checked).
     State { name: String },
 }
 

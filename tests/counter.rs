@@ -255,7 +255,7 @@ fn rejects_non_bool_if_condition() {
     "#;
     let err = compile(source).unwrap_err();
     assert!(
-        err.message.contains("needs a Bool state") && err.message.contains("is Int"),
+        err.message.contains("needs a Bool") && err.message.contains("is Int"),
         "got: {}",
         err.message
     );
@@ -283,4 +283,229 @@ fn literal_arguments_are_allowed() {
             },
         ]
     );
+}
+
+// --- record types ---
+
+#[test]
+fn compiles_profile_example_with_records() {
+    let source = include_str!("../examples/profile.nui");
+    let doc = compile(source).expect("profile example should compile");
+    let component = &doc.component;
+
+    assert_eq!(component.types.len(), 1);
+    assert_eq!(component.types[0].name, "Person");
+    assert_eq!(component.types[0].fields.len(), 2);
+    assert_eq!(component.types[0].fields[0].name, "name");
+    assert_eq!(component.types[0].fields[0].ty, ir::Type::String);
+
+    assert_eq!(component.state[0].name, "person");
+    assert_eq!(component.state[0].ty, ir::Type::Record("Person".into()));
+    let ir::Value::Record(fields) = &component.state[0].initial else {
+        panic!("expected a record initial value");
+    };
+    assert_eq!(fields[0].name, "name");
+    assert_eq!(fields[0].value, ir::Value::String("Ada Lovelace".into()));
+
+    assert_eq!(
+        component.functions[0].params[0].ty,
+        ir::Type::Record("Person".into())
+    );
+    assert_eq!(
+        component.functions[0].returns,
+        ir::Type::Record("Person".into())
+    );
+
+    // Interpolation resolved the dotted path, and the action passes the
+    // whole record state.
+    let ir::Node::VStack { children, .. } = &component.root else {
+        panic!("expected VStack root");
+    };
+    let ir::Node::Text { content, .. } = &children[0] else {
+        panic!("expected Text, got {:?}", children[0]);
+    };
+    assert_eq!(
+        content.0,
+        [ir::TextSegment::State {
+            name: "person.name".into()
+        }]
+    );
+    let ir::Node::Button { action, .. } = &children[2] else {
+        panic!("expected Button, got {:?}", children[2]);
+    };
+    assert_eq!(
+        action.args,
+        vec![ir::CallArg::State {
+            name: "person".into()
+        }]
+    );
+
+    // Records survive the JSON round-trip like everything else.
+    let json = serde_json::to_string(&doc).unwrap();
+    let back: ir::Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc, back);
+}
+
+#[test]
+fn record_literal_fields_land_in_declaration_order() {
+    let source = r#"
+        type Point { x: Int  y: Int }
+        component X {
+            state p: Point = Point(y: 2, x: 1)
+            Text { text: "{p.x}" }
+        }
+    "#;
+    let doc = compile(source).unwrap();
+    let ir::Value::Record(fields) = &doc.component.state[0].initial else {
+        panic!("expected a record value");
+    };
+    assert_eq!(fields[0].name, "x");
+    assert_eq!(fields[0].value, ir::Value::Int(1));
+    assert_eq!(fields[1].name, "y");
+    assert_eq!(fields[1].value, ir::Value::Int(2));
+}
+
+#[test]
+fn rejects_unknown_field_in_record_literal() {
+    let source = r#"
+        type Person { name: String }
+        component X {
+            state p: Person = Person(name: "A", age: 3)
+            Spacer
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("no field `age`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_missing_field_in_record_literal() {
+    let source = r#"
+        type Person { name: String  bio: String }
+        component X {
+            state p: Person = Person(name: "A")
+            Spacer
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("missing field `bio`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_record_typed_fields() {
+    let source = r#"
+        type Inner { n: Int }
+        type Outer { inner: Inner }
+        component X { Spacer }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("must be primitives"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_interpolating_a_whole_record() {
+    let source = r#"
+        type Person { name: String }
+        component X {
+            state p: Person = Person(name: "A")
+            Text { text: "{p}" }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("pick a field") && err.message.contains("p.name"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_unknown_field_path() {
+    let source = r#"
+        type Person { name: String }
+        component X {
+            state p: Person = Person(name: "A")
+            Text { text: "{p.age}" }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("no field `age`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_assigning_to_a_record_field() {
+    let source = r#"
+        type Person { name: String }
+        component X {
+            state p: Person = Person(name: "A")
+            logic { fn rename(name: String) -> String }
+            Button { label: "go", on_click: { p.name = rename(p.name) } }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("whole state"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn record_fields_work_as_call_arguments() {
+    let source = r#"
+        type Person { name: String }
+        component X {
+            state p: Person = Person(name: "A")
+            state greeting: String = ""
+            logic { fn greet(name: String) -> String }
+            Button { label: "go", on_click: { greeting = greet(p.name) } }
+        }
+    "#;
+    let doc = compile(source).unwrap();
+    let ir::Node::Button { action, .. } = &doc.component.root else {
+        panic!("expected Button root");
+    };
+    assert_eq!(
+        action.args,
+        vec![ir::CallArg::State {
+            name: "p.name".into()
+        }]
+    );
+}
+
+#[test]
+fn bool_record_fields_drive_if_conditions() {
+    let source = r#"
+        type Flags { ready: Bool }
+        component X {
+            state flags: Flags = Flags(ready: false)
+            VStack {
+                if flags.ready { Spacer }
+            }
+        }
+    "#;
+    let doc = compile(source).unwrap();
+    let ir::Node::VStack { children, .. } = &doc.component.root else {
+        panic!("expected VStack root");
+    };
+    let ir::Node::If { condition, .. } = &children[0] else {
+        panic!("expected an if node");
+    };
+    assert_eq!(condition, "flags.ready");
 }

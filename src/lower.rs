@@ -1,9 +1,10 @@
 //! Lowers the parsed AST into the serializable IR.
 //!
 //! All semantic checking happens here: view and style-property names,
-//! property shapes, state references (including inside `{...}`
-//! interpolations), state initial-value types, and full type checking of
-//! actions against the declared logic functions.
+//! property shapes, record type declarations, state references (including
+//! dotted record-field paths inside `{...}` interpolations), state
+//! initial-value types, and full type checking of actions against the
+//! declared logic functions.
 
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +16,74 @@ use crate::lexer::StrSegment;
 pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
     let component = &doc.component;
 
+    let mut types_in_order = Vec::new();
+    let mut types: HashMap<String, ir::RecordDecl> = HashMap::new();
+    for decl in &doc.types {
+        if primitive_type(&decl.name).is_some() {
+            return Err(Error::new(
+                format!("`{}` is a built-in type and cannot be redeclared", decl.name),
+                decl.span.line,
+                decl.span.col,
+            ));
+        }
+        if decl.name == component.name {
+            return Err(Error::new(
+                format!(
+                    "type `{}` has the same name as the component; rename one of them",
+                    decl.name
+                ),
+                decl.span.line,
+                decl.span.col,
+            ));
+        }
+        if types.contains_key(&decl.name) {
+            return Err(Error::new(
+                format!("type `{}` is declared twice", decl.name),
+                decl.span.line,
+                decl.span.col,
+            ));
+        }
+        if decl.fields.is_empty() {
+            return Err(Error::new(
+                format!("type `{}` needs at least one field", decl.name),
+                decl.span.line,
+                decl.span.col,
+            ));
+        }
+        let mut seen = HashSet::new();
+        let mut fields = Vec::new();
+        for field in &decl.fields {
+            if !seen.insert(field.name.as_str()) {
+                return Err(Error::new(
+                    format!("field `{}` is declared twice", field.name),
+                    field.span.line,
+                    field.span.col,
+                ));
+            }
+            let Some(ty) = primitive_type(&field.ty) else {
+                return Err(Error::new(
+                    format!(
+                        "field `{}` has type `{}`; record fields must be primitives \
+                         (Int, Float, Bool, or String) for now",
+                        field.name, field.ty
+                    ),
+                    field.span.line,
+                    field.span.col,
+                ));
+            };
+            fields.push(ir::Param {
+                name: field.name.clone(),
+                ty,
+            });
+        }
+        let record = ir::RecordDecl {
+            name: decl.name.clone(),
+            fields,
+        };
+        types.insert(decl.name.clone(), record.clone());
+        types_in_order.push(record);
+    }
+
     let mut state = Vec::new();
     let mut state_types: HashMap<String, ir::Type> = HashMap::new();
     for decl in &component.states {
@@ -25,9 +94,9 @@ pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
                 decl.span.col,
             ));
         }
-        let ty = parse_type(&decl.ty, decl.span)?;
-        let initial = lower_initial(&decl.name, ty, &decl.initial)?;
-        state_types.insert(decl.name.clone(), ty);
+        let ty = parse_type(&types, &decl.ty, decl.span)?;
+        let initial = lower_initial(&types, &decl.name, &ty, &decl.initial)?;
+        state_types.insert(decl.name.clone(), ty.clone());
         state.push(ir::StateDecl {
             name: decl.name.clone(),
             ty,
@@ -51,20 +120,21 @@ pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
             .map(|param| {
                 Ok(ir::Param {
                     name: param.name.clone(),
-                    ty: parse_type(&param.ty, param.span)?,
+                    ty: parse_type(&types, &param.ty, param.span)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
         let lowered = ir::FunctionDecl {
             name: decl.name.clone(),
             params,
-            returns: parse_type(&decl.returns, decl.span)?,
+            returns: parse_type(&types, &decl.returns, decl.span)?,
         };
         function_decls.insert(decl.name.clone(), lowered.clone());
         functions.push(lowered);
     }
 
     let ctx = Ctx {
+        types,
         state_types,
         functions: function_decls,
     };
@@ -74,6 +144,7 @@ pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
         format_version: ir::FORMAT_VERSION,
         component: ir::Component {
             name: component.name.clone(),
+            types: types_in_order,
             state,
             functions,
             root,
@@ -82,34 +153,126 @@ pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
 }
 
 struct Ctx {
+    types: HashMap<String, ir::RecordDecl>,
     state_types: HashMap<String, ir::Type>,
     functions: HashMap<String, ir::FunctionDecl>,
 }
 
-fn parse_type(name: &str, span: Span) -> Result<ir::Type> {
+fn primitive_type(name: &str) -> Option<ir::Type> {
     match name {
-        "Int" => Ok(ir::Type::Int),
-        "Float" => Ok(ir::Type::Float),
-        "Bool" => Ok(ir::Type::Bool),
-        "String" => Ok(ir::Type::String),
-        other => Err(Error::new(
-            format!("unknown type `{other}`; expected Int, Float, Bool, or String"),
-            span.line,
-            span.col,
-        )),
+        "Int" => Some(ir::Type::Int),
+        "Float" => Some(ir::Type::Float),
+        "Bool" => Some(ir::Type::Bool),
+        "String" => Some(ir::Type::String),
+        _ => None,
     }
 }
 
-fn type_name(ty: ir::Type) -> &'static str {
+fn parse_type(
+    types: &HashMap<String, ir::RecordDecl>,
+    name: &str,
+    span: Span,
+) -> Result<ir::Type> {
+    if let Some(ty) = primitive_type(name) {
+        return Ok(ty);
+    }
+    if types.contains_key(name) {
+        return Ok(ir::Type::Record(name.to_string()));
+    }
+    Err(Error::new(
+        format!(
+            "unknown type `{name}`; expected Int, Float, Bool, String, or a \
+             declared `type`"
+        ),
+        span.line,
+        span.col,
+    ))
+}
+
+fn type_name(ty: &ir::Type) -> String {
     match ty {
-        ir::Type::Int => "Int",
-        ir::Type::Float => "Float",
-        ir::Type::Bool => "Bool",
-        ir::Type::String => "String",
+        ir::Type::Int => "Int".into(),
+        ir::Type::Float => "Float".into(),
+        ir::Type::Bool => "Bool".into(),
+        ir::Type::String => "String".into(),
+        ir::Type::Record(name) => name.clone(),
     }
 }
 
-fn lower_initial(name: &str, ty: ir::Type, expr: &Expr) -> Result<ir::Value> {
+fn lower_initial(
+    types: &HashMap<String, ir::RecordDecl>,
+    name: &str,
+    ty: &ir::Type,
+    expr: &Expr,
+) -> Result<ir::Value> {
+    if let ir::Type::Record(record_name) = ty {
+        let record = &types[record_name];
+        let ExprKind::RecordLit {
+            name: lit_name,
+            fields,
+        } = &expr.kind
+        else {
+            return Err(Error::new(
+                format!(
+                    "initial value for `{name}` must be a `{record_name}(field: value, ...)` \
+                     literal"
+                ),
+                expr.span.line,
+                expr.span.col,
+            ));
+        };
+        if lit_name != record_name {
+            return Err(Error::new(
+                format!("`{name}` is declared as `{record_name}`, not `{lit_name}`"),
+                expr.span.line,
+                expr.span.col,
+            ));
+        }
+        let mut seen = HashSet::new();
+        for given in fields {
+            if !record.fields.iter().any(|f| f.name == given.name) {
+                return Err(Error::new(
+                    format!("type `{record_name}` has no field `{}`", given.name),
+                    given.span.line,
+                    given.span.col,
+                ));
+            }
+            if !seen.insert(given.name.as_str()) {
+                return Err(Error::new(
+                    format!("field `{}` given twice", given.name),
+                    given.span.line,
+                    given.span.col,
+                ));
+            }
+        }
+        // Values land in field-declaration order, so codegen is deterministic
+        // regardless of how the literal was written.
+        let mut out = Vec::new();
+        for field in &record.fields {
+            let Some(given) = fields.iter().find(|f| f.name == field.name) else {
+                return Err(Error::new(
+                    format!(
+                        "missing field `{}` in the `{record_name}(...)` initializer",
+                        field.name
+                    ),
+                    expr.span.line,
+                    expr.span.col,
+                ));
+            };
+            let value = lower_initial(
+                types,
+                &format!("{name}.{}", field.name),
+                &field.ty,
+                &given.value,
+            )?;
+            out.push(ir::FieldValue {
+                name: field.name.clone(),
+                value,
+            });
+        }
+        return Ok(ir::Value::Record(out));
+    }
+
     let value = match (ty, &expr.kind) {
         (ir::Type::Int, ExprKind::Int(v)) => Some(ir::Value::Int(*v)),
         (ir::Type::Float, ExprKind::Float(v)) => Some(ir::Value::Float(*v)),
@@ -260,21 +423,12 @@ fn lower_child(ctx: &Ctx, child: &ast::ChildExpr) -> Result<ir::Node> {
         ast::ChildExpr::Node(node) => lower_node(ctx, node),
         ast::ChildExpr::If(if_expr) => {
             let condition = &if_expr.condition;
-            let Some(ty) = ctx.state_types.get(condition).copied() else {
-                return Err(Error::new(
-                    format!(
-                        "unknown state `{condition}`; an `if` condition names a \
-                         declared Bool state"
-                    ),
-                    if_expr.span.line,
-                    if_expr.span.col,
-                ));
-            };
+            let ty = resolve_path(ctx, condition, if_expr.span)?;
             if ty != ir::Type::Bool {
                 return Err(Error::new(
                     format!(
-                        "`if {condition}` needs a Bool state, but `{condition}` is {}",
-                        type_name(ty)
+                        "`if {condition}` needs a Bool, but `{condition}` is {}",
+                        type_name(&ty)
                     ),
                     if_expr.span.line,
                     if_expr.span.col,
@@ -378,16 +532,58 @@ fn no_children(kind: &str, node: &ast::NodeExpr) -> Result<()> {
 
 // --- expression helpers ---
 
-fn check_state(ctx: &Ctx, name: &str, span: Span) -> Result<()> {
-    if ctx.state_types.contains_key(name) {
-        Ok(())
-    } else {
-        Err(Error::new(
-            format!("unknown state `{name}`; declare it with `state {name}: <Type> = <value>`"),
+/// Resolves a state name or dotted record-field path (`person.name`) to
+/// its type.
+fn resolve_path(ctx: &Ctx, path: &str, span: Span) -> Result<ir::Type> {
+    let mut segments = path.split('.');
+    let head = segments.next().expect("split yields at least one segment");
+    let Some(mut ty) = ctx.state_types.get(head).cloned() else {
+        return Err(Error::new(
+            format!("unknown state `{head}`; declare it with `state {head}: <Type> = <value>`"),
             span.line,
             span.col,
-        ))
+        ));
+    };
+    for segment in segments {
+        let ir::Type::Record(record_name) = &ty else {
+            return Err(Error::new(
+                format!(
+                    "`{path}` does not exist: {} values have no fields",
+                    type_name(&ty)
+                ),
+                span.line,
+                span.col,
+            ));
+        };
+        let record = &ctx.types[record_name];
+        let Some(field) = record.fields.iter().find(|f| f.name == segment) else {
+            return Err(Error::new(
+                format!("type `{record_name}` has no field `{segment}`"),
+                span.line,
+                span.col,
+            ));
+        };
+        ty = field.ty.clone();
     }
+    Ok(ty)
+}
+
+/// Like [`resolve_path`], but rejects whole records (for positions that
+/// need a displayable value).
+fn resolve_displayable(ctx: &Ctx, path: &str, span: Span) -> Result<ir::Type> {
+    let ty = resolve_path(ctx, path, span)?;
+    if let ir::Type::Record(record_name) = &ty {
+        let first_field = &ctx.types[record_name].fields[0].name;
+        return Err(Error::new(
+            format!(
+                "cannot display a whole `{record_name}` — pick a field, \
+                 e.g. `{path}.{first_field}`"
+            ),
+            span.line,
+            span.col,
+        ));
+    }
+    Ok(ty)
 }
 
 fn text_content(ctx: &Ctx, expr: &Expr) -> Result<ir::TextContent> {
@@ -400,7 +596,7 @@ fn text_content(ctx: &Ctx, expr: &Expr) -> Result<ir::TextContent> {
                         value: value.clone(),
                     }),
                     StrSegment::Interp(name) => {
-                        check_state(ctx, name, expr.span)?;
+                        resolve_displayable(ctx, name, expr.span)?;
                         out.push(ir::TextSegment::State { name: name.clone() });
                     }
                 }
@@ -408,7 +604,7 @@ fn text_content(ctx: &Ctx, expr: &Expr) -> Result<ir::TextContent> {
             Ok(ir::TextContent(out))
         }
         ExprKind::Ident(name) => {
-            check_state(ctx, name, expr.span)?;
+            resolve_displayable(ctx, name, expr.span)?;
             Ok(ir::TextContent(vec![ir::TextSegment::State {
                 name: name.clone(),
             }]))
@@ -430,7 +626,17 @@ fn lower_action(ctx: &Ctx, expr: &Expr) -> Result<ir::Action> {
             expr.span.col,
         ));
     };
-    let Some(target_ty) = ctx.state_types.get(target).copied() else {
+    if target.contains('.') {
+        return Err(Error::new(
+            format!(
+                "actions assign to a whole state — `{target}` is a record field; \
+                 return a new record from the logic function instead"
+            ),
+            expr.span.line,
+            expr.span.col,
+        ));
+    }
+    let Some(target_ty) = ctx.state_types.get(target).cloned() else {
         return Err(Error::new(
             format!("unknown state `{target}`; declare it with `state {target}: <Type> = <value>`"),
             expr.span.line,
@@ -453,8 +659,8 @@ fn lower_action(ctx: &Ctx, expr: &Expr) -> Result<ir::Action> {
         return Err(Error::new(
             format!(
                 "`{function}` returns {} but `{target}` is {}",
-                type_name(decl.returns),
-                type_name(target_ty)
+                type_name(&decl.returns),
+                type_name(&target_ty)
             ),
             call.span.line,
             call.span.col,
@@ -492,7 +698,7 @@ fn lower_call_arg(
         Error::new(
             format!(
                 "`{function}` expects {} for `{}`, found {found}",
-                type_name(param.ty),
+                type_name(&param.ty),
                 param.name
             ),
             arg.span.line,
@@ -501,17 +707,11 @@ fn lower_call_arg(
     };
     match &arg.kind {
         ExprKind::Ident(name) => {
-            let Some(state_ty) = ctx.state_types.get(name).copied() else {
-                return Err(Error::new(
-                    format!("unknown state `{name}`"),
-                    arg.span.line,
-                    arg.span.col,
-                ));
-            };
+            let state_ty = resolve_path(ctx, name, arg.span)?;
             if state_ty != param.ty {
                 return Err(mismatch(&format!(
-                    "state `{name}` of type {}",
-                    type_name(state_ty)
+                    "`{name}` of type {}",
+                    type_name(&state_ty)
                 )));
             }
             Ok(ir::CallArg::State { name: name.clone() })
@@ -543,6 +743,9 @@ fn lower_call_arg(
             }),
             _ => Err(mismatch("a String literal")),
         },
+        ExprKind::RecordLit { .. } => {
+            Err(mismatch("a record literal (pass a record state instead)"))
+        }
         ExprKind::Call { .. } | ExprKind::Assign { .. } => {
             Err(mismatch("a nested call (not supported)"))
         }
@@ -551,10 +754,15 @@ fn lower_call_arg(
 
 fn state_ref(ctx: &Ctx, expr: &Expr) -> Result<String> {
     match &expr.kind {
-        ExprKind::Ident(name) => {
-            check_state(ctx, name, expr.span)?;
+        ExprKind::Ident(name) if !name.contains('.') => {
+            resolve_path(ctx, name, expr.span)?;
             Ok(name.clone())
         }
+        ExprKind::Ident(name) => Err(Error::new(
+            format!("`{name}` is a record field; bind a plain state (for now)"),
+            expr.span.line,
+            expr.span.col,
+        )),
         _ => Err(Error::new(
             "expected a state name",
             expr.span.line,

@@ -15,7 +15,18 @@ pub struct Span {
 
 #[derive(Debug, Clone)]
 pub struct Document {
+    /// Top-level `type Name { field: Type ... }` declarations.
+    pub types: Vec<TypeDecl>,
     pub component: Component,
+}
+
+/// A record type declaration. Field shapes reuse [`Param`]; lowering
+/// checks that field types are primitives.
+#[derive(Debug, Clone)]
+pub struct TypeDecl {
+    pub name: String,
+    pub fields: Vec<Param>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -117,11 +128,15 @@ pub enum ExprKind {
     Float(f64),
     Bool(bool),
     Str(Vec<StrSegment>),
-    /// A bare name: a state reference or enum-like value such as a font
-    /// style. Resolved during lowering.
+    /// A bare name: a state reference (possibly a dotted path into a
+    /// record, `person.name`) or an enum-like value such as a font style.
+    /// Resolved during lowering.
     Ident(String),
     /// A logic call: `increment(count)`. Only valid inside an action.
     Call { function: String, args: Vec<Expr> },
+    /// A record literal: `Person(name: "Ada", bio: "...")`. Distinguished
+    /// from a call by its named arguments; valid as a state initializer.
+    RecordLit { name: String, fields: Vec<Prop> },
     /// An action: `count = increment(count)` inside an `on_click: { ... }`
     /// block — call a logic function and assign the result to a state.
     Assign { target: String, call: Box<Expr> },

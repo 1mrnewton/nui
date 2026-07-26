@@ -30,6 +30,7 @@ pub fn generate(doc: &ir::Document) -> String {
     w.line("import SwiftUI");
     w.blank();
 
+    emit_types(&mut w, component);
     emit_state(&mut w, component);
     emit_logic(&mut w, component);
     emit_store(&mut w, component, &actions);
@@ -105,6 +106,42 @@ pub(crate) fn upper_first(name: &str) -> String {
     }
 }
 
+/// Record types declared with `type Name { ... }` become plain value
+/// structs, shared by the state struct and the logic protocol.
+pub(crate) fn emit_types(w: &mut Writer, component: &ir::Component) {
+    if component.types.is_empty() {
+        return;
+    }
+    w.line("// MARK: - Types");
+    w.blank();
+    for record in &component.types {
+        w.line(format!(
+            "public struct {}: Equatable, Sendable {{",
+            record.name
+        ));
+        w.indented(|w| {
+            for field in &record.fields {
+                w.line(format!("public var {}: {}", field.name, swift_type(&field.ty)));
+            }
+            w.blank();
+            let params: Vec<String> = record
+                .fields
+                .iter()
+                .map(|field| format!("{}: {}", field.name, swift_type(&field.ty)))
+                .collect();
+            w.line(format!("public init({}) {{", params.join(", ")));
+            w.indented(|w| {
+                for field in &record.fields {
+                    w.line(format!("self.{0} = {0}", field.name));
+                }
+            });
+            w.line("}");
+        });
+        w.line("}");
+        w.blank();
+    }
+}
+
 pub(crate) fn emit_state(w: &mut Writer, component: &ir::Component) {
     let name = &component.name;
     w.line("// MARK: - State");
@@ -115,7 +152,7 @@ pub(crate) fn emit_state(w: &mut Writer, component: &ir::Component) {
             w.line(format!(
                 "public var {}: {}",
                 decl.name,
-                swift_type(decl.ty)
+                swift_type(&decl.ty)
             ));
         }
         if !component.state.is_empty() {
@@ -128,8 +165,8 @@ pub(crate) fn emit_state(w: &mut Writer, component: &ir::Component) {
                 format!(
                     "{}: {} = {}",
                     decl.name,
-                    swift_type(decl.ty),
-                    value_literal(&decl.initial)
+                    swift_type(&decl.ty),
+                    initial_literal(component, &decl.ty, &decl.initial)
                 )
             })
             .collect();
@@ -166,13 +203,13 @@ pub(crate) fn protocol_method(function: &ir::FunctionDecl) -> String {
     let params: Vec<String> = function
         .params
         .iter()
-        .map(|param| format!("{}: {}", param.name, swift_type(param.ty)))
+        .map(|param| format!("{}: {}", param.name, swift_type(&param.ty)))
         .collect();
     format!(
         "func {}({}) async -> {}",
         function.name,
         params.join(", "),
-        swift_type(function.returns)
+        swift_type(&function.returns)
     )
 }
 
@@ -269,7 +306,7 @@ fn emit_preview(w: &mut Writer, component: &ir::Component) {
             w.line(format!(
                 "{} {{ {} }}",
                 protocol_method(function),
-                default_value(function.returns)
+                default_value(component, &function.returns)
             ));
         }
     });
@@ -285,13 +322,32 @@ fn emit_preview(w: &mut Writer, component: &ir::Component) {
     w.line("#endif");
 }
 
-pub(crate) fn default_value(ty: ir::Type) -> &'static str {
+pub(crate) fn default_value(component: &ir::Component, ty: &ir::Type) -> String {
     match ty {
-        ir::Type::Int => "0",
-        ir::Type::Float => "0.0",
-        ir::Type::Bool => "false",
-        ir::Type::String => "\"\"",
+        ir::Type::Int => "0".into(),
+        ir::Type::Float => "0.0".into(),
+        ir::Type::Bool => "false".into(),
+        ir::Type::String => "\"\"".into(),
+        ir::Type::Record(name) => {
+            let record = record_decl(component, name);
+            let fields: Vec<String> = record
+                .fields
+                .iter()
+                .map(|field| {
+                    format!("{}: {}", field.name, default_value(component, &field.ty))
+                })
+                .collect();
+            format!("{name}({})", fields.join(", "))
+        }
     }
+}
+
+pub(crate) fn record_decl<'a>(component: &'a ir::Component, name: &str) -> &'a ir::RecordDecl {
+    component
+        .types
+        .iter()
+        .find(|record| record.name == name)
+        .expect("record types are checked during lowering")
 }
 
 // --- view tree ---
@@ -428,12 +484,13 @@ fn modifier_call(modifier: &ir::Modifier) -> String {
 
 // --- literals and names ---
 
-pub(crate) fn swift_type(ty: ir::Type) -> &'static str {
+pub(crate) fn swift_type(ty: &ir::Type) -> String {
     match ty {
-        ir::Type::Int => "Int",
-        ir::Type::Float => "Double",
-        ir::Type::Bool => "Bool",
-        ir::Type::String => "String",
+        ir::Type::Int => "Int".into(),
+        ir::Type::Float => "Double".into(),
+        ir::Type::Bool => "Bool".into(),
+        ir::Type::String => "String".into(),
+        ir::Type::Record(name) => name.clone(),
     }
 }
 
@@ -474,6 +531,37 @@ pub(crate) fn value_literal(value: &ir::Value) -> String {
         }
         ir::Value::Bool(v) => v.to_string(),
         ir::Value::String(s) => string_literal(s),
+        // Record values carry no type name; format them with the typed
+        // helper below, which lowering guarantees is always possible here.
+        ir::Value::Record(_) => unreachable!("record values are formatted via initial_literal"),
+    }
+}
+
+/// Formats an initial value, using the state's declared type to name the
+/// record in `Person(name: "Ada", ...)` literals.
+pub(crate) fn initial_literal(
+    component: &ir::Component,
+    ty: &ir::Type,
+    value: &ir::Value,
+) -> String {
+    match (ty, value) {
+        (ir::Type::Record(name), ir::Value::Record(values)) => {
+            let record = record_decl(component, name);
+            let fields: Vec<String> = record
+                .fields
+                .iter()
+                .zip(values)
+                .map(|(field, given)| {
+                    format!(
+                        "{}: {}",
+                        field.name,
+                        initial_literal(component, &field.ty, &given.value)
+                    )
+                })
+                .collect();
+            format!("{name}({})", fields.join(", "))
+        }
+        _ => value_literal(value),
     }
 }
 

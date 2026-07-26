@@ -21,8 +21,8 @@
 
 use crate::ir;
 use crate::swift::{
-    call_args, default_value, emit_logic, emit_state, number, protocol_method, string_literal,
-    text_literal, upper_first, ActionMethods, Writer,
+    call_args, default_value, emit_logic, emit_state, emit_types, number, protocol_method,
+    string_literal, text_literal, upper_first, ActionMethods, Writer,
 };
 
 pub fn generate(doc: &ir::Document) -> String {
@@ -39,6 +39,7 @@ pub fn generate(doc: &ir::Document) -> String {
     w.line("import UIKit");
     w.blank();
 
+    emit_types(&mut w, component);
     emit_state(&mut w, component);
     emit_logic(&mut w, component);
     emit_store(&mut w, component, &actions);
@@ -557,7 +558,7 @@ fn emit_preview(w: &mut Writer, component: &ir::Component) {
             w.line(format!(
                 "{} {{ {} }}",
                 protocol_method(function),
-                default_value(function.returns)
+                default_value(component, &function.returns)
             ));
         }
     });

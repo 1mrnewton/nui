@@ -4,6 +4,9 @@ This is the smallest language that can express the counter app. It is
 deliberately tiny: nui describes *what the UI is*, never *what it computes*.
 Anything smarter than a binding belongs in the logic layer.
 
+Record types (`type Person { ... }`) let state and logic functions carry
+structured values; see `examples/profile.nui`.
+
 ## Example
 
 ```
@@ -45,40 +48,48 @@ component Counter {
 - **Whitespace** is insignificant. Newlines are just whitespace.
 - **Comments**: `//` to end of line.
 - **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`.
-- **Keywords**: `component`, `state`, `logic`, `fn`, `if`, `else`, `true`,
-  `false`. (`event` is reserved and produces a migration error. `style` and
-  `on_click` are ordinary identifiers with special meaning as view keys.)
+- **Keywords**: `component`, `type`, `state`, `logic`, `fn`, `if`, `else`,
+  `true`, `false`. (`event` is reserved and produces a migration error.
+  `style` and `on_click` are ordinary identifiers with special meaning as
+  view keys.)
 - **Numbers**: `123`, `-4`, `2.5`. A `.` only starts a fraction when a digit
   follows; `->` is the arrow.
 - **Strings**: double-quoted. Escapes: `\"`, `\\`, `\n`, `\t`, `\{`, `\}`.
   `{name}` inside a string is **state interpolation** and is resolved at
-  compile time into text segments — runtimes never parse strings.
+  compile time into text segments — runtimes never parse strings. A dotted
+  path reaches into a record: `{person.name}`.
 
 ## Grammar (EBNF)
 
 ```ebnf
-document    = component ;
+document    = { typeDecl } component ;
+typeDecl    = "type" IDENT "{" { field } "}" ;
+field       = IDENT ":" primType ;
 component   = "component" IDENT "{" { declaration } node "}" ;
 declaration = stateDecl | logicBlock ;
-stateDecl   = "state" IDENT ":" type "=" literal ;
+stateDecl   = "state" IDENT ":" type "=" ( literal | recordLit ) ;
 logicBlock  = "logic" "{" { fnDecl } "}" ;
 fnDecl      = "fn" IDENT "(" [ paramList ] ")" "->" type ;
 paramList   = param { "," param } ;
 param       = IDENT ":" type ;
-type        = "Int" | "Float" | "Bool" | "String" ;
+primType    = "Int" | "Float" | "Bool" | "String" ;
+type        = primType | IDENT (* a declared record type *) ;
 
 node        = IDENT [ "{" { entry } "}" ] ;
 entry       = styleBlock | actionBlock | property | child ;
 child       = node | ifBranch ;
-ifBranch    = "if" IDENT "{" { child } "}" [ "else" "{" { child } "}" ] ;
+ifBranch    = "if" path "{" { child } "}" [ "else" "{" { child } "}" ] ;
 property    = IDENT ":" expr ;
 styleBlock  = "style" ":" "{" { styleProp } "}" ;
 styleProp   = IDENT ":" expr ;
 actionBlock = "on_click" ":" "{" action "}" ;
 action      = IDENT "=" call ;
 call        = IDENT "(" [ expr { "," expr } ] ")" ;
+recordLit   = IDENT "(" fieldInit { "," fieldInit } ")" ;
+fieldInit   = IDENT ":" literal ;
 
-expr        = literal | IDENT ;
+path        = IDENT { "." IDENT } ;
+expr        = literal | path ;
 literal     = INT | FLOAT | STRING | "true" | "false" ;
 ```
 
@@ -91,17 +102,25 @@ Notes:
   lowercase keys keep the two visually distinct. Commas between entries
   are optional — use them for one-liners
   (`Button { label: "+", on_click: { ... } }`).
-- A bare `IDENT` in value position is resolved during lowering: a state
-  reference (`text: name`) or an enum-like value (`font: title`).
+- A bare `IDENT` (or dotted path) in value position is resolved during
+  lowering: a state reference (`text: name`, `text: person.name`) or an
+  enum-like value (`font: title`).
+- `type` declares a record: named, typed fields, primitives only for now.
+  A record state initializes with a literal naming every field —
+  `state person: Person = Person(name: "Ada", bio: "...")` (named
+  arguments distinguish a record literal from a logic call). Records pass
+  whole through logic functions; text reaches into them with dotted paths.
 - `on_click:` blocks hold exactly one action (for now). Call arguments are
-  state references or literals — never nested calls. Actions are fully
-  type-checked: the function must be declared, argument types must match
-  the parameters, and the return type must match the assigned state.
+  state references, record-field paths, or literals — never nested calls.
+  Actions are fully type-checked: the function must be declared, argument
+  types must match the parameters, and the return type must match the
+  assigned state. Actions assign to a whole state, never to a field —
+  return a new record from the logic function instead.
 - `if` appears in child position and branches hold child views only. The
-  condition is always a declared `Bool` state — no comparisons or boolean
-  expressions in the UI; anything smarter than a flag is computed in the
-  logic layer (see `examples/toggle.nui`). `else if` is not supported yet;
-  nest an `if` inside `else { ... }`.
+  condition is always a declared `Bool` state (or a `Bool` record field) —
+  no comparisons or boolean expressions in the UI; anything smarter than a
+  flag is computed in the logic layer (see `examples/toggle.nui`).
+  `else if` is not supported yet; nest an `if` inside `else { ... }`.
 
 ## Views (v0)
 
@@ -144,14 +163,17 @@ Every view except `Spacer` also accepts one `style:` block.
   driven by a `Bool` state. SwiftUI renders it as a native `if` in the
   view builder; UIKit renders each branch as a container whose visibility
   tracks the state.
-- Everything is checked at compile time: state references, function
-  references, property names, argument types, and return types. A `.nui`
-  file that compiles cannot make an ill-typed call at runtime.
+- Record types cross the FFI boundary by value. The Rust side gets a
+  UniFFI `Record` struct prefixed with the component name
+  (`ProfilePerson`) so the UniFFI-generated Swift never collides with the
+  UI-side struct (`Person`); the generated bridge converts field-by-field.
+- Everything is checked at compile time: state references, record fields,
+  function references, property names, argument types, and return types.
+  A `.nui` file that compiles cannot make an ill-typed call at runtime.
 
 ## Reserved for later (not implemented, by design)
 
-- Record types (`type Todo { title: String, done: Bool }`) usable as state
-  and in logic signatures — needed for `data = fetchData()`
+- Record fields of record type (nesting), and list types (`[Todo]`)
 - `else if` chains (nest an `if` inside `else { ... }` for now)
 - `for x in items` — dynamic `List` content over collection state
 - Component composition (`component Row { ... }` used inside another view)

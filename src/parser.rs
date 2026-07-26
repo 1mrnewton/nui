@@ -2,7 +2,7 @@
 
 use crate::ast::{
     ChildExpr, Component, Document, Expr, ExprKind, FnDecl, IfExpr, NodeExpr, Param, Prop, Span,
-    StateDecl,
+    StateDecl, TypeDecl,
 };
 use crate::error::{Error, Result};
 use crate::lexer::{lex, Token, TokenKind};
@@ -84,6 +84,10 @@ impl Parser {
     }
 
     fn document(&mut self) -> Result<Document> {
+        let mut types = Vec::new();
+        while self.peek_kind() == &TokenKind::Type {
+            types.push(self.type_decl()?);
+        }
         let component = self.component()?;
         if self.peek_kind() != &TokenKind::Eof {
             return Err(self.error_here(format!(
@@ -91,7 +95,46 @@ impl Parser {
                 self.peek_kind().describe()
             )));
         }
-        Ok(Document { component })
+        Ok(Document { types, component })
+    }
+
+    /// Parses `type Name { field: Type ... }` (commas optional).
+    fn type_decl(&mut self) -> Result<TypeDecl> {
+        let span = self.span();
+        self.expect(TokenKind::Type, "`type`")?;
+        let (name, _) = self.expect_ident("a type name")?;
+        self.expect(TokenKind::LBrace, "`{` to open the type body")?;
+        let mut fields = Vec::new();
+        loop {
+            match self.peek_kind() {
+                TokenKind::RBrace => {
+                    self.bump();
+                    break;
+                }
+                TokenKind::Comma => {
+                    self.bump();
+                }
+                TokenKind::Ident(_) => {
+                    let field_span = self.span();
+                    let (field_name, _) = self.expect_ident("a field name")?;
+                    self.expect(TokenKind::Colon, "`:` followed by the field type")?;
+                    let (ty, _) =
+                        self.expect_ident("a field type (Int, Float, Bool, or String)")?;
+                    fields.push(Param {
+                        name: field_name,
+                        ty,
+                        span: field_span,
+                    });
+                }
+                other => {
+                    return Err(self.error_here(format!(
+                        "expected a field (`name: Type`) or `}}` in `type {name}`, found {}",
+                        other.describe()
+                    )));
+                }
+            }
+        }
+        Ok(TypeDecl { name, fields, span })
     }
 
     fn component(&mut self) -> Result<Component> {
@@ -141,7 +184,8 @@ impl Parser {
         self.expect(TokenKind::State, "`state`")?;
         let (name, _) = self.expect_ident("a state name")?;
         self.expect(TokenKind::Colon, "`:` followed by a type")?;
-        let (ty, _) = self.expect_ident("a type (Int, Float, Bool, or String)")?;
+        let (ty, _) =
+            self.expect_ident("a type (Int, Float, Bool, String, or a declared type)")?;
         self.expect(TokenKind::Eq, "`=` followed by an initial value")?;
         let initial = self.literal_expr("a literal initial value")?;
         Ok(StateDecl {
@@ -173,7 +217,8 @@ impl Parser {
                 let param_span = self.span();
                 let (param_name, _) = self.expect_ident("a parameter name")?;
                 self.expect(TokenKind::Colon, "`:` followed by the parameter type")?;
-                let (ty, _) = self.expect_ident("a type (Int, Float, Bool, or String)")?;
+                let (ty, _) =
+                    self.expect_ident("a type (Int, Float, Bool, String, or a declared type)")?;
                 params.push(Param {
                     name: param_name,
                     ty,
@@ -283,6 +328,7 @@ impl Parser {
         let span = self.span();
         self.expect(TokenKind::If, "`if`")?;
         let (condition, _) = self.expect_ident("a Bool state name after `if`")?;
+        let condition = self.dotted_path(condition)?;
         self.expect(TokenKind::LBrace, "`{` to open the `if` branch")?;
         let then_children = self.child_list("if")?;
         let mut else_children = Vec::new();
@@ -412,8 +458,9 @@ impl Parser {
             },
             TokenKind::Ident(_) => {
                 let (name, _) = self.expect_ident("a value")?;
+                let name = self.dotted_path(name)?;
                 match self.peek_kind() {
-                    // `increment(count)` — a logic call
+                    // `increment(count)` — a logic call (or a record literal)
                     TokenKind::LParen => self.call_expr(name)?,
                     // `count = increment(count)` — an action
                     TokenKind::Eq => {
@@ -449,9 +496,50 @@ impl Parser {
         Ok(Expr { kind, span })
     }
 
-    /// Parses `(args...)` after a function name; the `(` is peeked, not consumed.
+    /// Extends `name` with `.field` segments into a dotted path
+    /// (`person.name`). Returns `name` unchanged when no dot follows.
+    fn dotted_path(&mut self, mut name: String) -> Result<String> {
+        while self.peek_kind() == &TokenKind::Dot
+            && matches!(self.peek2_kind(), TokenKind::Ident(_))
+        {
+            self.bump(); // dot
+            let (segment, _) = self.expect_ident("a field name after `.`")?;
+            name.push('.');
+            name.push_str(&segment);
+        }
+        Ok(name)
+    }
+
+    /// Parses `(...)` after a name; the `(` is peeked, not consumed.
+    /// Positional arguments make a logic call (`increment(count)`); named
+    /// arguments make a record literal (`Person(name: "Ada")`).
     fn call_expr(&mut self, function: String) -> Result<ExprKind> {
         self.expect(TokenKind::LParen, "`(`")?;
+        if matches!(self.peek_kind(), TokenKind::Ident(_))
+            && self.peek2_kind() == &TokenKind::Colon
+        {
+            let mut fields = Vec::new();
+            loop {
+                let field_span = self.span();
+                let (field, _) = self.expect_ident("a field name")?;
+                self.expect(TokenKind::Colon, "`:` after the field name")?;
+                fields.push(Prop {
+                    name: field,
+                    value: self.expr()?,
+                    span: field_span,
+                });
+                if self.peek_kind() == &TokenKind::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "`)` to close the record literal")?;
+            return Ok(ExprKind::RecordLit {
+                name: function,
+                fields,
+            });
+        }
         let mut args = Vec::new();
         if self.peek_kind() != &TokenKind::RParen {
             loop {
@@ -471,7 +559,11 @@ impl Parser {
         let expr = self.expr()?;
         if !matches!(
             expr.kind,
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_)
+            ExprKind::Int(_)
+                | ExprKind::Float(_)
+                | ExprKind::Bool(_)
+                | ExprKind::Str(_)
+                | ExprKind::RecordLit { .. }
         ) {
             return Err(Error::new(
                 format!("expected {what}"),
@@ -650,5 +742,64 @@ mod tests {
     fn reports_missing_root_view() {
         let err = parse("component X { state n: Int = 0 }").unwrap_err();
         assert!(err.message.contains("root view"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn parses_type_declarations_and_record_literals() {
+        let doc = parse(
+            r#"
+            type Person {
+                name: String
+                bio: String
+            }
+            component X {
+                state p: Person = Person(name: "Ada", bio: "First programmer.")
+                Text { text: "{p.name}" }
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(doc.types.len(), 1);
+        assert_eq!(doc.types[0].name, "Person");
+        assert_eq!(doc.types[0].fields.len(), 2);
+        assert_eq!(doc.types[0].fields[0].name, "name");
+        assert_eq!(doc.types[0].fields[0].ty, "String");
+        let ExprKind::RecordLit { name, fields } = &doc.component.states[0].initial.kind else {
+            panic!("expected a record literal initializer");
+        };
+        assert_eq!(name, "Person");
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "name");
+    }
+
+    #[test]
+    fn parses_dotted_paths_in_values_and_conditions() {
+        let doc = parse(
+            r#"
+            component X {
+                state ready: Bool = false
+                logic { fn greet(name: String) -> String }
+                VStack {
+                    if flags.ready { Spacer }
+                    Button { label: "go", on_click: { title = greet(p.name) } }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let ChildExpr::If(if_expr) = &doc.component.root.children[0] else {
+            panic!("expected an if child");
+        };
+        assert_eq!(if_expr.condition, "flags.ready");
+        let ChildExpr::Node(button) = &doc.component.root.children[1] else {
+            panic!("expected a view child");
+        };
+        let ExprKind::Assign { call, .. } = &button.props[1].value.kind else {
+            panic!("expected an action");
+        };
+        let ExprKind::Call { args, .. } = &call.kind else {
+            panic!("expected a call");
+        };
+        assert!(matches!(&args[0].kind, ExprKind::Ident(name) if name == "p.name"));
     }
 }

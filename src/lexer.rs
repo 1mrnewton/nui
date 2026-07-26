@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, PartialEq)]
 pub enum StrSegment {
     Literal(String),
-    /// A `{stateName}` interpolation.
+    /// A `{stateName}` or `{state.field}` interpolation.
     Interp(String),
 }
 
@@ -17,6 +17,7 @@ pub enum StrSegment {
 pub enum TokenKind {
     // Keywords
     Component,
+    Type,
     State,
     Logic,
     Fn,
@@ -48,6 +49,7 @@ impl TokenKind {
     pub fn describe(&self) -> String {
         match self {
             TokenKind::Component => "`component`".into(),
+            TokenKind::Type => "`type`".into(),
             TokenKind::State => "`state`".into(),
             TokenKind::Logic => "`logic`".into(),
             TokenKind::Fn => "`fn`".into(),
@@ -206,6 +208,7 @@ impl Lexer {
         }
         match name.as_str() {
             "component" => TokenKind::Component,
+            "type" => TokenKind::Type,
             "state" => TokenKind::State,
             "logic" => TokenKind::Logic,
             "fn" => TokenKind::Fn,
@@ -300,19 +303,21 @@ impl Lexer {
                     }
                     let mut name = String::new();
                     while let Some(c) = self.peek() {
-                        if !is_ident_continue(c) {
+                        if !is_ident_continue(c) && c != '.' {
                             break;
                         }
                         name.push(c);
                         self.bump();
                     }
-                    let valid = name
-                        .chars()
-                        .next()
-                        .is_some_and(is_ident_start);
+                    // A state name, or a dotted path into a record.
+                    let valid = !name.is_empty()
+                        && name
+                            .split('.')
+                            .all(|seg| seg.chars().next().is_some_and(is_ident_start));
                     if !valid {
                         return Err(Error::new(
-                            "expected a state name inside `{...}` interpolation",
+                            "expected a state name (or `state.field` path) inside `{...}` \
+                             interpolation",
                             interp_line,
                             interp_col,
                         ));

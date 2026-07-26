@@ -125,6 +125,8 @@ docs/
 examples/
   counter.nui the "hello world" — a counter whose logic lives elsewhere
   toggle.nui  `if` / `else` subtrees driven by a Bool state
+  profile.nui record types: structured state, dotted paths, records
+              passing whole through the Rust logic
 logic/
   counter/    the counter's Rust logic: pure fns, UniFFI bindings,
               build-xcframework.sh, host-app files (see its README)
@@ -153,9 +155,14 @@ tests/
 - [x] `if` / `else` conditionals driven by `Bool` state — a native `if`
       in SwiftUI, visibility-toggled branch containers in UIKit
       (`examples/toggle.nui`)
-- [ ] Record types (`type Todo { ... }`) for `data = fetchData()`
+- [x] Record types: `type Person { ... }` as state, in logic signatures,
+      and across the FFI boundary (UniFFI `Record` structs, prefixed to
+      avoid symbol collisions; the bridge converts field-wise) — dotted
+      paths in interpolation, arguments, and `if` conditions
+      (`examples/profile.nui`)
+- [ ] List types (`[Todo]`) and `for … in` — dynamic `List` content
 - [ ] Kotlin backend: the same file shape for Jetpack Compose
-- [ ] Language: `for … in`, component composition,
+- [ ] Language: component composition, navigation,
       named styles / design tokens
 - [ ] Hot reload: interpret the IR JSON in a dev shell app
 - [ ] More logic languages: Go, TypeScript (QuickJS/Hermes), C++

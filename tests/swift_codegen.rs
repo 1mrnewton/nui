@@ -180,3 +180,30 @@ fn escapes_string_literals() {
         "bad escaping:\n{source}"
     );
 }
+
+#[test]
+fn emits_record_types_and_field_paths() {
+    let source = include_str!("../examples/profile.nui");
+    let doc = compile(source).unwrap();
+    let generated = swift::generate(&doc);
+    for expected in [
+        // The record becomes a plain value struct...
+        "public struct Person: Equatable, Sendable {",
+        "public var name: String",
+        "public init(name: String, bio: String) {",
+        // ...the state default is the record literal from the .nui file...
+        r#"person: Person = Person(name: "Ada Lovelace""#,
+        // ...the protocol and store pass whole records...
+        "func next(current: Person) async -> Person",
+        "state.person = await logic.next(current: state.person)",
+        // ...and interpolation reaches through the dotted path.
+        r#"Text("\(store.state.person.name)")"#,
+        // The preview stub builds a default record.
+        r#"func next(current: Person) async -> Person { Person(name: "", bio: "") }"#,
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected:?} in generated Swift:\n{generated}"
+        );
+    }
+}

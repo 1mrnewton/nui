@@ -1,0 +1,42 @@
+// Record types: a `type` declares a structured value, state holds one,
+// text interpolates its fields with dotted paths, and the logic layer
+// receives and returns whole records across the FFI boundary.
+//
+// Rust side (names prefixed with the component to avoid collisions):
+//
+//     #[uniffi::export]
+//     pub fn profile_next(current: ProfilePerson) -> ProfilePerson { ... }
+
+type Person {
+    name: String
+    bio: String
+}
+
+component Profile {
+    state person: Person = Person(
+        name: "Ada Lovelace",
+        bio: "Wrote the first program, a century before the hardware."
+    )
+
+    logic {
+        fn next(current: Person) -> Person
+    }
+
+    VStack {
+        spacing: 8
+        style: { padding: 24 }
+
+        Text {
+            text: "{person.name}"
+            style: { font: title }
+        }
+        Text {
+            text: "{person.bio}"
+            style: { color: secondary }
+        }
+        Button {
+            label: "Next"
+            on_click: { person = next(person) }
+        }
+    }
+}

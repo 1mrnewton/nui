@@ -128,6 +128,28 @@ fn if_branches_become_hidden_toggled_containers() {
 }
 
 #[test]
+fn record_field_labels_update_in_apply_state() {
+    let source = include_str!("../examples/profile.nui");
+    let doc = compile(source).unwrap();
+    let generated = uikit::generate(&doc);
+    for expected in [
+        // The record struct is shared with the SwiftUI backend's shape.
+        "public struct Person: Equatable, Sendable {",
+        // Field-path labels are stored properties updated in applyState().
+        "private let label0 = UILabel()",
+        r#"label0.text = "\(store.state.person.name)""#,
+        r#"label1.text = "\(store.state.person.bio)""#,
+        // The action passes the whole record through the store.
+        "state.person = await logic.next(current: state.person)",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected:?} in generated UIKit source:\n{generated}"
+        );
+    }
+}
+
+#[test]
 fn dynamic_button_labels_update_in_apply_state() {
     let source_nui = r#"
         component X {
