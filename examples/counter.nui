@@ -1,0 +1,44 @@
+// counter.nui — the "hello world" of nui.
+//
+// nui owns the state; the backend owns the logic. The `logic` block
+// declares the typed interface the backend (Rust) implements; a Button's
+// `on_click` block routes a tap into a logic call and assigns the result
+// back to state:
+//
+//     on_click: { count = increment(count) }
+//
+// The UI never computes values — it declares what to call and where the
+// result lands. The compiler generates the Swift protocol, the Rust
+// signature checks, and the FFI bridge from this one file.
+
+component Counter {
+    state count: Int = 0
+
+    logic {
+        fn increment(count: Int) -> Int
+        fn decrement(count: Int) -> Int
+    }
+
+    VStack {
+        spacing: 16
+        style: { padding: 24 }
+
+        Text {
+            text: "Count: {count}"
+            style: { font: title }
+        }
+
+        HStack {
+            spacing: 12
+
+            Button {
+                label: "-"
+                on_click: { count = decrement(count) }
+            }
+            Button {
+                label: "+"
+                on_click: { count = increment(count) }
+            }
+        }
+    }
+}

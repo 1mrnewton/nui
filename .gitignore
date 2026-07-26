@@ -1,0 +1,7 @@
+/target
+/logic/counter/target
+/logic/counter/generated
+/logic/counter/CounterLogic.xcframework
+/logic/counter/app/CounterApp.xcodeproj
+/logic/counter/app/build
+/CounterView.swift

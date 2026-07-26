@@ -1,0 +1,56 @@
+# XcodeGen spec for the counter demo app.
+#
+# Prerequisites (both from the repo root):
+#   nui build examples/counter.nui -o CounterView.swift
+#   logic/counter/build-xcframework.sh
+# Then:
+#   cd logic/counter/app && xcodegen generate
+name: CounterApp
+options:
+  bundleIdPrefix: dev.nui
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  CounterApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../../../CounterView.swift        # nui-generated UI
+      - path: ../swift/CounterApp.swift         # app entry point
+      - path: ../swift/RustCounterLogic.swift   # adapter: nui protocol → Rust
+      - path: ../generated/counter_logic.swift  # UniFFI bindings
+    dependencies:
+      - framework: ../CounterLogic.xcframework  # compiled Rust (static)
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nui.CounterApp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  CounterAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: CounterApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+schemes:
+  CounterApp:
+    build:
+      targets:
+        CounterApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - CounterAppUITests

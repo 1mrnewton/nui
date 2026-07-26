@@ -1,0 +1,23 @@
+[package]
+name = "counter-logic"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "counter_logic"
+# lib: unit tests; staticlib: linked into the iOS app / XCFramework;
+# cdylib: host build used by uniffi-bindgen library mode.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+uniffi = { version = "0.29", features = ["cli"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[profile.release]
+lto = true
+
+# Standalone crate: the logic layer is app-land, not part of the compiler.
+[workspace]
