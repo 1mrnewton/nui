@@ -5,4 +5,5 @@
 /logic/counter/app/CounterApp.xcodeproj
 /logic/counter/app/build
 /CounterView.swift
+/CounterViewController.swift
 .DS_Store

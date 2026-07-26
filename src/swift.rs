@@ -41,12 +41,13 @@ pub fn generate(doc: &ir::Document) -> String {
 
 /// Every distinct action in the view tree becomes one generated store
 /// method (`count = increment(count)` → `func incrementCount()`).
-struct ActionMethods {
-    methods: Vec<(ir::Action, String)>,
+/// Shared with the UIKit backend so both emit identical store methods.
+pub(crate) struct ActionMethods {
+    pub(crate) methods: Vec<(ir::Action, String)>,
 }
 
 impl ActionMethods {
-    fn collect(component: &ir::Component) -> Self {
+    pub(crate) fn collect(component: &ir::Component) -> Self {
         let mut methods: Vec<(ir::Action, String)> = Vec::new();
         collect_actions(&component.root, &mut |action| {
             if methods.iter().any(|(existing, _)| existing == action) {
@@ -64,7 +65,7 @@ impl ActionMethods {
         Self { methods }
     }
 
-    fn name_for(&self, action: &ir::Action) -> &str {
+    pub(crate) fn name_for(&self, action: &ir::Action) -> &str {
         self.methods
             .iter()
             .find(|(existing, _)| existing == action)
@@ -87,7 +88,7 @@ fn collect_actions(node: &ir::Node, f: &mut impl FnMut(&ir::Action)) {
     }
 }
 
-fn upper_first(name: &str) -> String {
+pub(crate) fn upper_first(name: &str) -> String {
     let mut chars = name.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -95,7 +96,7 @@ fn upper_first(name: &str) -> String {
     }
 }
 
-fn emit_state(w: &mut Writer, component: &ir::Component) {
+pub(crate) fn emit_state(w: &mut Writer, component: &ir::Component) {
     let name = &component.name;
     w.line("// MARK: - State");
     w.blank();
@@ -135,7 +136,7 @@ fn emit_state(w: &mut Writer, component: &ir::Component) {
     w.blank();
 }
 
-fn emit_logic(w: &mut Writer, component: &ir::Component) {
+pub(crate) fn emit_logic(w: &mut Writer, component: &ir::Component) {
     let name = &component.name;
     w.line("// MARK: - Logic");
     w.blank();
@@ -152,7 +153,7 @@ fn emit_logic(w: &mut Writer, component: &ir::Component) {
     w.blank();
 }
 
-fn protocol_method(function: &ir::FunctionDecl) -> String {
+pub(crate) fn protocol_method(function: &ir::FunctionDecl) -> String {
     let params: Vec<String> = function
         .params
         .iter()
@@ -206,7 +207,7 @@ fn emit_store(w: &mut Writer, component: &ir::Component, actions: &ActionMethods
     w.blank();
 }
 
-fn call_args(component: &ir::Component, action: &ir::Action) -> String {
+pub(crate) fn call_args(component: &ir::Component, action: &ir::Action) -> String {
     // Labels come from the declared params; lowering checked args against them.
     let decl = component
         .functions
@@ -275,7 +276,7 @@ fn emit_preview(w: &mut Writer, component: &ir::Component) {
     w.line("#endif");
 }
 
-fn default_value(ty: ir::Type) -> &'static str {
+pub(crate) fn default_value(ty: ir::Type) -> &'static str {
     match ty {
         ir::Type::Int => "0",
         ir::Type::Float => "0.0",
@@ -395,7 +396,7 @@ fn modifier_call(modifier: &ir::Modifier) -> String {
 
 // --- literals and names ---
 
-fn swift_type(ty: ir::Type) -> &'static str {
+pub(crate) fn swift_type(ty: ir::Type) -> &'static str {
     match ty {
         ir::Type::Int => "Int",
         ir::Type::Float => "Double",
@@ -428,7 +429,7 @@ fn color_name(color: ir::Color) -> &'static str {
     }
 }
 
-fn value_literal(value: &ir::Value) -> String {
+pub(crate) fn value_literal(value: &ir::Value) -> String {
     match value {
         ir::Value::Int(v) => v.to_string(),
         ir::Value::Float(v) => {
@@ -445,7 +446,7 @@ fn value_literal(value: &ir::Value) -> String {
 }
 
 /// Formats spacing/padding numbers, dropping a trailing `.0`.
-fn number(value: f64) -> String {
+pub(crate) fn number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{}", value as i64)
     } else {
@@ -453,7 +454,7 @@ fn number(value: f64) -> String {
     }
 }
 
-fn string_literal(text: &str) -> String {
+pub(crate) fn string_literal(text: &str) -> String {
     let mut out = String::from("\"");
     escape_into(text, &mut out);
     out.push('"');
@@ -461,7 +462,7 @@ fn string_literal(text: &str) -> String {
 }
 
 /// Interpolated text: `"Count: {count}"` → `"Count: \(store.state.count)"`.
-fn text_literal(content: &ir::TextContent) -> String {
+pub(crate) fn text_literal(content: &ir::TextContent) -> String {
     let mut out = String::from("\"");
     for segment in &content.0 {
         match segment {
@@ -489,16 +490,16 @@ fn escape_into(text: &str, out: &mut String) {
     }
 }
 
-// --- output plumbing ---
+// --- output plumbing (shared with the UIKit backend) ---
 
 #[derive(Default)]
-struct Writer {
-    out: String,
-    indent: usize,
+pub(crate) struct Writer {
+    pub(crate) out: String,
+    pub(crate) indent: usize,
 }
 
 impl Writer {
-    fn line(&mut self, text: impl AsRef<str>) {
+    pub(crate) fn line(&mut self, text: impl AsRef<str>) {
         for _ in 0..self.indent {
             self.out.push_str("    ");
         }
@@ -506,11 +507,11 @@ impl Writer {
         self.out.push('\n');
     }
 
-    fn blank(&mut self) {
+    pub(crate) fn blank(&mut self) {
         self.out.push('\n');
     }
 
-    fn indented(&mut self, f: impl FnOnce(&mut Self)) {
+    pub(crate) fn indented(&mut self, f: impl FnOnce(&mut Self)) {
         self.indent += 1;
         f(self);
         self.indent -= 1;

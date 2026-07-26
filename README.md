@@ -78,6 +78,8 @@ Three decisions worth knowing about:
 ```sh
 cargo run -- build examples/counter.nui --target swift   # SwiftUI to stdout
 cargo run -- build examples/counter.nui -o CounterView.swift
+cargo run -- build examples/counter.nui --target uikit \
+    -o CounterViewController.swift                       # UIKit UI (experimental)
 cargo run -- build examples/counter.nui --target rust \
     -o logic/counter/src/generated.rs                    # logic interface checks
 cargo run -- build examples/counter.nui --target swift-bridge \
@@ -113,6 +115,8 @@ src/
   lower.rs        checks + lowering: references, argument shapes, action types
   ir.rs           the checked IR — the contract all backends consume
   swift.rs        Swift backend: IR → a single drop-in SwiftUI file
+  uikit.rs        UIKit backend (experimental): IR → view controller with
+                  direct state application — no SwiftUI, no diffing
   rust_logic.rs   Rust backend: expected fn signatures + compile-time checks
   swift_bridge.rs bridge backend: UI protocol → UniFFI calls
   main.rs         CLI: nui build / nui check
@@ -142,6 +146,9 @@ tests/
 - [x] Generated everything: SwiftUI file, Swift↔Rust bridge, and Rust
       signature checks all come from the one `.nui` file; only the
       function bodies are handwritten
+- [x] UIKit backend (experimental): the same IR transpiles to a pure
+      UIKit view controller — native controls without SwiftUI, direct
+      state application instead of diffing; same bridge, same UI tests
 - [ ] Record types (`type Todo { ... }`) for `data = fetchData()`
 - [ ] Kotlin backend: the same file shape for Jetpack Compose
 - [ ] Language: `if`, `for … in`, component composition,

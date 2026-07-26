@@ -1,7 +1,12 @@
 # XcodeGen spec for the counter demo app.
 #
-# Prerequisites (both from the repo root):
+# Two app targets share the same Rust logic and bridge:
+#   CounterApp      — the SwiftUI backend (CounterView.swift)
+#   CounterAppUIKit — the UIKit backend experiment (CounterViewController.swift)
+#
+# Prerequisites (from the repo root):
 #   nui build examples/counter.nui -o CounterView.swift
+#   nui build examples/counter.nui --target uikit -o CounterViewController.swift
 #   logic/counter/build-xcframework.sh
 # Then:
 #   cd logic/counter/app && xcodegen generate
@@ -31,6 +36,26 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  CounterAppUIKit:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../../../CounterViewController.swift  # nui-generated UI (UIKit)
+      - path: ../swift/CounterAppUIKit.swift        # app entry point (pure UIKit)
+      - path: ../swift/RustCounterLogic.swift       # adapter: nui protocol → Rust
+      - path: ../generated/counter_logic.swift      # UniFFI bindings
+    dependencies:
+      - framework: ../CounterLogic.xcframework      # compiled Rust (static)
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.nui.CounterAppUIKit
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
   CounterAppUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -38,6 +63,18 @@ targets:
       - path: UITests
     dependencies:
       - target: CounterApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]: NO
+  CounterAppUIKitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests   # same tests: the two backends must behave identically
+    dependencies:
+      - target: CounterAppUIKit
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -54,3 +91,13 @@ schemes:
       config: Debug
       targets:
         - CounterAppUITests
+  CounterAppUIKit:
+    build:
+      targets:
+        CounterAppUIKit: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - CounterAppUIKitUITests

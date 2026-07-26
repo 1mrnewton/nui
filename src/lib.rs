@@ -2,7 +2,8 @@
 //!
 //! This crate is the compiler: it parses `.nui` source, lowers it into a
 //! portable IR (see [`ir`]), and transpiles that IR to native UI source —
-//! SwiftUI on iOS ([`swift`]), Jetpack Compose on Android (planned).
+//! SwiftUI on iOS ([`swift`]), UIKit as an experiment ([`uikit`]), Jetpack
+//! Compose on Android (planned).
 //!
 //! Pipeline: source → [`lexer`] → [`parser`] (AST in [`ast`]) → [`lower`]
 //! (checks + lowering) → [`ir::Document`] → Swift source or IR JSON.
@@ -16,6 +17,7 @@ pub mod parser;
 pub mod rust_logic;
 pub mod swift;
 pub mod swift_bridge;
+pub mod uikit;
 
 pub use error::{Error, Result};
 

@@ -9,6 +9,7 @@ USAGE:
   nui build <file.nui> [--target <target>] [-o <out>]
         compile to the given target (stdout by default):
           swift         SwiftUI source (UI, store, logic protocol)
+          uikit         UIKit source (experimental; same store/logic shape)
           rust          logic-crate interface: expected fn signatures + checks
           swift-bridge  adapter connecting the UI to the Rust logic
           ir            IR JSON (debugging)
@@ -69,13 +70,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let document = compile_file(&input)?;
             let mut rendered = match target.as_str() {
                 "swift" => nui::swift::generate(&document),
+                "uikit" => nui::uikit::generate(&document),
                 "rust" => nui::rust_logic::generate(&document),
                 "swift-bridge" => nui::swift_bridge::generate(&document),
                 "ir" | "json" => serde_json::to_string_pretty(&document)
                     .map_err(|e| format!("failed to serialize IR: {e}"))?,
                 other => {
                     return Err(format!(
-                        "unknown target `{other}`; expected `swift`, `rust`, `swift-bridge`, or `ir`"
+                        "unknown target `{other}`; expected `swift`, `uikit`, `rust`, \
+                         `swift-bridge`, or `ir`"
                     ));
                 }
             };
