@@ -22,7 +22,7 @@
 use crate::ir;
 use crate::swift::{
     call_args, default_value, emit_logic, emit_state, emit_types, number, protocol_method,
-    string_literal, text_literal, upper_first, ActionMethods, Writer,
+    string_literal, swift_type, text_literal, upper_first, ActionMethods, Writer,
 };
 
 pub fn generate(doc: &ir::Document) -> String {
@@ -128,6 +128,11 @@ fn collect_bindings(node: &ir::Node, out: &mut Vec<String>) {
                 collect_bindings(child, out);
             }
         }
+        ir::Node::For { children, .. } => {
+            for child in children {
+                collect_bindings(child, out);
+            }
+        }
         _ => {}
     }
 }
@@ -149,6 +154,7 @@ const ROOT_CTX: StackCtx = StackCtx {
 fn emit_view_controller(w: &mut Writer, component: &ir::Component, actions: &ActionMethods) {
     let name = &component.name;
     let mut vc = Vc {
+        component,
         actions,
         decls: Vec::new(),
         build: Writer {
@@ -156,6 +162,8 @@ fn emit_view_controller(w: &mut Writer, component: &ir::Component, actions: &Act
             indent: 2,
         },
         apply: Vec::new(),
+        rows: Vec::new(),
+        in_row: false,
         next_id: 0,
     };
     let mut root_names = vc.emit_node(&component.root, &ROOT_CTX);
@@ -227,6 +235,10 @@ fn emit_view_controller(w: &mut Writer, component: &ir::Component, actions: &Act
         });
         w.line("}");
     });
+    for row in &vc.rows {
+        w.blank();
+        w.out.push_str(row);
+    }
     w.line("}");
     w.blank();
 }
@@ -236,10 +248,16 @@ fn emit_view_controller(w: &mut Writer, component: &ir::Component, actions: &Act
 /// everything else is a local. Returns the variable naming each node's
 /// final view (after padding wraps).
 struct Vc<'a> {
+    component: &'a ir::Component,
     actions: &'a ActionMethods,
     decls: Vec<String>,
     build: Writer,
     apply: Vec<String>,
+    /// Fully formatted `makeRow` methods, one per `for` loop.
+    rows: Vec<String>,
+    /// Inside a row builder everything is emitted inline (rows are rebuilt
+    /// wholesale on every state change), never as stored properties.
+    in_row: bool,
     next_id: usize,
 }
 
@@ -265,7 +283,7 @@ impl Vc<'_> {
             ir::Node::Text { content, modifiers } => {
                 self.begin_block();
                 let name = format!("label{}", self.next());
-                if is_dynamic(content) {
+                if !self.in_row && is_dynamic(content) {
                     self.decls.push(format!("private let {name} = UILabel()"));
                     self.apply
                         .push(format!("{name}.text = {}", text_literal(content)));
@@ -286,7 +304,7 @@ impl Vc<'_> {
                 self.begin_block();
                 let name = format!("button{}", self.next());
                 let method = self.actions.name_for(action).to_string();
-                if is_dynamic(label) {
+                if !self.in_row && is_dynamic(label) {
                     self.decls
                         .push(format!("private let {name} = UIButton(type: .system)"));
                     self.build.line(format!(
@@ -394,7 +412,100 @@ impl Vc<'_> {
                 }
                 names
             }
+            ir::Node::For {
+                binding,
+                source,
+                children,
+            } => {
+                let id = self.next();
+                let name = format!("forStack{id}");
+                let row_fn = format!("makeRow{id}");
+                self.decls
+                    .push(format!("private let {name} = UIStackView()"));
+                self.begin_block();
+                self.build.line(format!("{name}.axis = .{}", parent.axis));
+                self.build
+                    .line(format!("{name}.alignment = {}", parent.alignment));
+                if let Some(spacing) = parent.spacing {
+                    self.build
+                        .line(format!("{name}.spacing = {}", number(spacing)));
+                }
+                self.emit_row_builder(&row_fn, binding, source, children, parent);
+                self.apply.push(format!(
+                    "{name}.arrangedSubviews.forEach {{ $0.removeFromSuperview() }}"
+                ));
+                self.apply.push(format!(
+                    "for {binding} in store.state.{source} {{ \
+                     {name}.addArrangedSubview({row_fn}({binding})) }}"
+                ));
+                vec![name]
+            }
         }
+    }
+
+    /// Emits the `makeRow` method for one `for` loop. Rows contain no
+    /// stored properties or `applyState()` lines: every state change
+    /// rebuilds all rows, so their content is always current.
+    fn emit_row_builder(
+        &mut self,
+        row_fn: &str,
+        binding: &str,
+        source: &str,
+        children: &[ir::Node],
+        parent: &StackCtx,
+    ) {
+        let element = element_type(self.component, source);
+        let saved_build = std::mem::replace(
+            &mut self.build,
+            Writer {
+                out: String::new(),
+                indent: 2,
+            },
+        );
+        self.in_row = true;
+        let mut names: Vec<String> = children
+            .iter()
+            .flat_map(|child| self.emit_node(child, parent))
+            .collect();
+        let root = if names.len() == 1 {
+            names.remove(0)
+        } else {
+            // Multiple views per element: group them so each element still
+            // contributes exactly one arranged subview.
+            let wrap = format!("row{}", self.next());
+            self.begin_block();
+            self.build.line(format!(
+                "let {wrap} = UIStackView(arrangedSubviews: [{}])",
+                names.join(", ")
+            ));
+            self.build.line(format!("{wrap}.axis = .{}", parent.axis));
+            self.build
+                .line(format!("{wrap}.alignment = {}", parent.alignment));
+            if let Some(spacing) = parent.spacing {
+                self.build
+                    .line(format!("{wrap}.spacing = {}", number(spacing)));
+            }
+            wrap
+        };
+        self.in_row = false;
+        let body = std::mem::replace(&mut self.build, saved_build);
+
+        let mut method = Writer {
+            out: String::new(),
+            indent: 1,
+        };
+        method.line(format!(
+            "/// Builds one row of `for {binding} in {source}`. Rows are rebuilt"
+        ));
+        method.line("/// wholesale in `applyState()` — no diffing yet.");
+        method.line(format!(
+            "private func {row_fn}(_ {binding}: {}) -> UIView {{",
+            swift_type(&element)
+        ));
+        method.out.push_str(&body.out);
+        method.indented(|w| w.line(format!("return {root}")));
+        method.line("}");
+        self.rows.push(method.out);
     }
 
     /// One `if` branch becomes a stored container stack that inherits the
@@ -523,6 +634,20 @@ fn is_dynamic(content: &ir::TextContent) -> bool {
         .0
         .iter()
         .any(|segment| matches!(segment, ir::TextSegment::State { .. }))
+}
+
+/// The element type of a `for` loop's source list. The source is always a
+/// plain state name in v1 (record fields cannot hold lists yet).
+fn element_type(component: &ir::Component, source: &str) -> ir::Type {
+    let decl = component
+        .state
+        .iter()
+        .find(|state| state.name == source)
+        .expect("the `for` source was checked during lowering");
+    let ir::Type::List(inner) = &decl.ty else {
+        unreachable!("the `for` source is always a list");
+    };
+    (**inner).clone()
 }
 
 fn emit_pad_helper(w: &mut Writer) {

@@ -94,6 +94,11 @@ fn collect_actions(node: &ir::Node, f: &mut impl FnMut(&ir::Action)) {
                 collect_actions(child, f);
             }
         }
+        ir::Node::For { children, .. } => {
+            for child in children {
+                collect_actions(child, f);
+            }
+        }
         _ => {}
     }
 }
@@ -339,6 +344,7 @@ pub(crate) fn default_value(component: &ir::Component, ty: &ir::Type) -> String 
                 .collect();
             format!("{name}({})", fields.join(", "))
         }
+        ir::Type::List(_) => "[]".into(),
     }
 }
 
@@ -432,6 +438,25 @@ fn emit_node(w: &mut Writer, node: &ir::Node, actions: &ActionMethods) {
                 w.line("}");
             }
         }
+        ir::Node::For {
+            binding,
+            source,
+            children,
+        } => {
+            // Rows are identified by index for now; fine for append/clear,
+            // revisit when rows get identity-sensitive animations.
+            let index = format!("{binding}Index");
+            w.line(format!(
+                "ForEach(store.state.{source}.indices, id: \\.self) {{ {index} in"
+            ));
+            w.indented(|w| {
+                w.line(format!("let {binding} = store.state.{source}[{index}]"));
+                for child in children {
+                    emit_node(w, child, actions);
+                }
+            });
+            w.line("}");
+        }
     }
 }
 
@@ -491,6 +516,7 @@ pub(crate) fn swift_type(ty: &ir::Type) -> String {
         ir::Type::Bool => "Bool".into(),
         ir::Type::String => "String".into(),
         ir::Type::Record(name) => name.clone(),
+        ir::Type::List(inner) => format!("[{}]", swift_type(inner)),
     }
 }
 
@@ -531,9 +557,11 @@ pub(crate) fn value_literal(value: &ir::Value) -> String {
         }
         ir::Value::Bool(v) => v.to_string(),
         ir::Value::String(s) => string_literal(s),
-        // Record values carry no type name; format them with the typed
-        // helper below, which lowering guarantees is always possible here.
-        ir::Value::Record(_) => unreachable!("record values are formatted via initial_literal"),
+        // Record and list values carry no type name; format them with the
+        // typed helper below, which lowering guarantees is always possible.
+        ir::Value::Record(_) | ir::Value::List(_) => {
+            unreachable!("record and list values are formatted via initial_literal")
+        }
     }
 }
 
@@ -560,6 +588,13 @@ pub(crate) fn initial_literal(
                 })
                 .collect();
             format!("{name}({})", fields.join(", "))
+        }
+        (ir::Type::List(inner), ir::Value::List(values)) => {
+            let elements: Vec<String> = values
+                .iter()
+                .map(|element| initial_literal(component, inner, element))
+                .collect();
+            format!("[{}]", elements.join(", "))
         }
         _ => value_literal(value),
     }
@@ -589,6 +624,14 @@ pub(crate) fn text_literal(content: &ir::TextContent) -> String {
             ir::TextSegment::Literal { value } => escape_into(value, &mut out),
             ir::TextSegment::State { name } => {
                 out.push_str("\\(store.state.");
+                out.push_str(name);
+                out.push(')');
+            }
+            // Loop variables are plain locals in the generated Swift: the
+            // SwiftUI `ForEach` closure and the UIKit row builder both bind
+            // them under their `.nui` name.
+            ir::TextSegment::Local { name } => {
+                out.push_str("\\(");
                 out.push_str(name);
                 out.push(')');
             }

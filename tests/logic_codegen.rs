@@ -152,3 +152,66 @@ fn record_int_fields_convert_at_the_ffi_boundary() {
         "{bridge}"
     );
 }
+
+#[test]
+fn lists_become_vec_signatures() {
+    let source = include_str!("../examples/todos.nui");
+    let rust = rust_logic::generate(&compile(source).unwrap());
+
+    for expected in [
+        "//     pub fn todo_list_add(todos: Vec<TodoListTodo>) -> Vec<TodoListTodo>",
+        "let _: fn(Vec<TodoListTodo>) -> Vec<TodoListTodo> = crate::todo_list_add;",
+    ] {
+        assert!(
+            rust.contains(expected),
+            "missing {expected:?} in generated Rust:\n{rust}"
+        );
+    }
+}
+
+#[test]
+fn bridge_converts_lists_element_wise() {
+    let source = include_str!("../examples/todos.nui");
+    let bridge = swift_bridge::generate(&compile(source).unwrap());
+
+    for expected in [
+        "func add(todos: [Todo]) async -> [Todo] {",
+        "let result = todoListAdd(todos: todos.map { TodoListTodo(title: $0.title) })",
+        "return result.map { Todo(title: $0.title) }",
+    ] {
+        assert!(
+            bridge.contains(expected),
+            "missing {expected:?} in generated bridge:\n{bridge}"
+        );
+    }
+}
+
+#[test]
+fn primitive_lists_pass_through_but_int_lists_map() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            state counts: [Int] = []
+            logic {
+                fn sort(names: [String]) -> [String]
+                fn double(counts: [Int]) -> [Int]
+            }
+            VStack {
+                Button { label: "a", on_click: { names = sort(names) } }
+                Button { label: "b", on_click: { counts = double(counts) } }
+            }
+        }
+    "#;
+    let bridge = swift_bridge::generate(&compile(source).unwrap());
+
+    // Strings cross untouched; Ints widen per element.
+    assert!(bridge.contains("xSort(names: names)"), "{bridge}");
+    assert!(
+        bridge.contains("xDouble(counts: counts.map { Int64($0) })"),
+        "{bridge}"
+    );
+    assert!(
+        bridge.contains("return result.map { Int($0) }"),
+        "{bridge}"
+    );
+}

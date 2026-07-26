@@ -82,11 +82,13 @@ pub struct NodeExpr {
     pub span: Span,
 }
 
-/// One entry in child position: a view, or an `if` over a Bool state.
+/// One entry in child position: a view, an `if` over a Bool state, or a
+/// `for` over a list state.
 #[derive(Debug, Clone)]
 pub enum ChildExpr {
     Node(NodeExpr),
     If(IfExpr),
+    For(ForExpr),
 }
 
 impl ChildExpr {
@@ -94,6 +96,7 @@ impl ChildExpr {
         match self {
             ChildExpr::Node(node) => node.span,
             ChildExpr::If(if_expr) => if_expr.span,
+            ChildExpr::For(for_expr) => for_expr.span,
         }
     }
 }
@@ -105,6 +108,17 @@ pub struct IfExpr {
     pub condition: String,
     pub then_children: Vec<ChildExpr>,
     pub else_children: Vec<ChildExpr>,
+    pub span: Span,
+}
+
+/// `for todo in todos { ... }` — one subtree per element of a list state.
+/// `binding` is a scoped local usable in the body (validated during
+/// lowering).
+#[derive(Debug, Clone)]
+pub struct ForExpr {
+    pub binding: String,
+    pub source: String,
+    pub children: Vec<ChildExpr>,
     pub span: Span,
 }
 
@@ -137,6 +151,9 @@ pub enum ExprKind {
     /// A record literal: `Person(name: "Ada", bio: "...")`. Distinguished
     /// from a call by its named arguments; valid as a state initializer.
     RecordLit { name: String, fields: Vec<Prop> },
+    /// A list literal: `[]` or `[Todo(title: "a"), ...]`. Valid as a state
+    /// initializer for a list-typed state.
+    ListLit(Vec<Expr>),
     /// An action: `count = increment(count)` inside an `on_click: { ... }`
     /// block — call a logic function and assign the result to a state.
     Assign { target: String, call: Box<Expr> },

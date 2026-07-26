@@ -63,7 +63,8 @@ pub struct StateDecl {
     pub initial: Value,
 }
 
-/// Primitives serialize as `"int"`; records as `{"record": "Person"}`.
+/// Primitives serialize as `"int"`; records as `{"record": "Person"}`;
+/// lists as `{"list": <element type>}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Type {
@@ -73,10 +74,14 @@ pub enum Type {
     String,
     /// A declared record type, by name.
     Record(String),
+    /// A list of primitives or records (no nesting, checked in lowering).
+    List(Box<Type>),
 }
 
 /// A literal value. Untagged in JSON: `0`, `1.5`, `true`, `"hi"`; a record
-/// value is an array of `{name, value}` pairs in field-declaration order.
+/// value is an array of `{name, value}` pairs in field-declaration order;
+/// a list is a plain array of values. `List` is declared before `Record`
+/// so `[]` deserializes as a list (a record always has at least one field).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Value {
@@ -84,6 +89,7 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     String(String),
+    List(Vec<Value>),
     Record(Vec<FieldValue>),
 }
 
@@ -188,6 +194,15 @@ pub enum Node {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         else_children: Vec<Node>,
     },
+    /// One subtree per element of a list state. `binding` is the loop
+    /// variable, referenced by `TextSegment::Local` paths in the children.
+    /// Checked at compile time: `source` resolves to a list, and the body
+    /// holds no nested `if`/`for`/`TextField` (v1).
+    For {
+        binding: String,
+        source: String,
+        children: Vec<Node>,
+    },
 }
 
 /// Text with `{state}` interpolation resolved into segments, so runtimes
@@ -203,6 +218,9 @@ pub enum TextSegment {
     /// A state reference; `name` may be a dotted path into a record
     /// (`person.name`). Always resolves to a primitive (checked).
     State { name: String },
+    /// A `for` loop-variable reference (`todo` or `todo.title`). Always
+    /// resolves to a primitive (checked).
+    Local { name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

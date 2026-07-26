@@ -6,9 +6,9 @@
 //! (`counter_increment` in Rust → `counterIncrement` in Swift) with the
 //! `Int ↔ Int64` conversions handled. Record types cross the boundary by
 //! field-wise conversion between the UI struct (`Person`) and the
-//! component-prefixed UniFFI record (`ProfilePerson`). With this file
-//! generated, the only handwritten code anywhere is the function bodies in
-//! the Rust crate.
+//! component-prefixed UniFFI record (`ProfilePerson`); lists convert
+//! element-wise with `map`. With this file generated, the only handwritten
+//! code anywhere is the function bodies in the Rust crate.
 
 use std::fmt::Write as _;
 
@@ -53,15 +53,19 @@ pub fn generate(doc: &ir::Document) -> String {
             uniffi_swift_name(&prefix, &function.name),
             args.join(", ")
         );
-        if let ir::Type::Record(record_name) = &function.returns {
-            let _ = writeln!(out, "        let result = {call}");
-            let _ = writeln!(
-                out,
-                "        return {}",
-                record_from_ffi(component, record_name, "result")
-            );
-        } else {
-            let _ = writeln!(out, "        {}", from_ffi(&function.returns, &call));
+        match &function.returns {
+            // Structured results get a named intermediate for readability.
+            ty @ (ir::Type::Record(_) | ir::Type::List(_)) if needs_conversion(ty) => {
+                let _ = writeln!(out, "        let result = {call}");
+                let _ = writeln!(
+                    out,
+                    "        return {}",
+                    from_ffi(component, ty, "result")
+                );
+            }
+            ty => {
+                let _ = writeln!(out, "        {}", from_ffi(component, ty, &call));
+            }
         }
         let _ = writeln!(out, "    }}");
     }
@@ -99,23 +103,37 @@ fn ffi_field_label(name: &str) -> String {
     lower_camel(&snake_case(name))
 }
 
+/// True when a value of this type changes representation at the FFI
+/// boundary (Bool/Float/String pass through untouched).
+fn needs_conversion(ty: &ir::Type) -> bool {
+    match ty {
+        ir::Type::Int | ir::Type::Record(_) => true,
+        ir::Type::List(inner) => needs_conversion(inner),
+        _ => false,
+    }
+}
+
 /// nui Swift value → FFI value: Int widens to Int64; records convert
-/// field-wise into the component-prefixed UniFFI record.
+/// field-wise into the component-prefixed UniFFI record; lists map their
+/// elements.
 fn to_ffi(component: &ir::Component, param: &ir::Param) -> String {
-    match &param.ty {
-        ir::Type::Int => format!("Int64({})", param.name),
+    convert_to_ffi(component, &param.ty, &param.name)
+}
+
+fn convert_to_ffi(component: &ir::Component, ty: &ir::Type, expr: &str) -> String {
+    match ty {
+        ir::Type::Int => format!("Int64({expr})"),
         ir::Type::Record(record_name) => {
             let record = record_decl(component, record_name);
             let fields: Vec<String> = record
                 .fields
                 .iter()
                 .map(|field| {
-                    let access = format!("{}.{}", param.name, field.name);
-                    let value = match field.ty {
-                        ir::Type::Int => format!("Int64({access})"),
-                        _ => access,
-                    };
-                    format!("{}: {}", ffi_field_label(&field.name), value)
+                    format!(
+                        "{}: {}",
+                        ffi_field_label(&field.name),
+                        convert_to_ffi(component, &field.ty, &format!("{expr}.{}", field.name))
+                    )
                 })
                 .collect();
             format!(
@@ -124,32 +142,39 @@ fn to_ffi(component: &ir::Component, param: &ir::Param) -> String {
                 fields.join(", ")
             )
         }
-        _ => param.name.clone(),
+        ir::Type::List(inner) if needs_conversion(inner) => {
+            format!("{expr}.map {{ {} }}", convert_to_ffi(component, inner, "$0"))
+        }
+        _ => expr.to_string(),
     }
 }
 
-/// FFI result → nui Swift value (primitives).
-fn from_ffi(ty: &ir::Type, call: &str) -> String {
+/// FFI result → nui Swift value: the mirror of [`convert_to_ffi`].
+fn from_ffi(component: &ir::Component, ty: &ir::Type, expr: &str) -> String {
     match ty {
-        ir::Type::Int => format!("Int({call})"),
-        _ => call.to_string(),
+        ir::Type::Int => format!("Int({expr})"),
+        ir::Type::Record(record_name) => {
+            let record = record_decl(component, record_name);
+            let fields: Vec<String> = record
+                .fields
+                .iter()
+                .map(|field| {
+                    format!(
+                        "{}: {}",
+                        field.name,
+                        from_ffi(
+                            component,
+                            &field.ty,
+                            &format!("{expr}.{}", ffi_field_label(&field.name))
+                        )
+                    )
+                })
+                .collect();
+            format!("{record_name}({})", fields.join(", "))
+        }
+        ir::Type::List(inner) if needs_conversion(inner) => {
+            format!("{expr}.map {{ {} }}", from_ffi(component, inner, "$0"))
+        }
+        _ => expr.to_string(),
     }
-}
-
-/// FFI record result → UI struct, field-wise.
-fn record_from_ffi(component: &ir::Component, record_name: &str, source: &str) -> String {
-    let record = record_decl(component, record_name);
-    let fields: Vec<String> = record
-        .fields
-        .iter()
-        .map(|field| {
-            let access = format!("{source}.{}", ffi_field_label(&field.name));
-            let value = match field.ty {
-                ir::Type::Int => format!("Int({access})"),
-                _ => access,
-            };
-            format!("{}: {}", field.name, value)
-        })
-        .collect();
-    format!("{record_name}({})", fields.join(", "))
 }

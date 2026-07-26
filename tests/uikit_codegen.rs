@@ -174,3 +174,25 @@ fn dynamic_button_labels_update_in_apply_state() {
         );
     }
 }
+
+#[test]
+fn for_loops_rebuild_rows_in_apply_state() {
+    let source = include_str!("../examples/todos.nui");
+    let generated = uikit::generate(&compile(source).unwrap());
+
+    for expected in [
+        // The loop container is a stored stack…
+        "private let forStack4 = UIStackView()",
+        // …whose rows are torn down and rebuilt on every state change.
+        "forStack4.arrangedSubviews.forEach { $0.removeFromSuperview() }",
+        "for todo in store.state.todos { forStack4.addArrangedSubview(makeRow4(todo)) }",
+        // One generated builder per loop; the loop variable is its parameter.
+        "private func makeRow4(_ todo: Todo) -> UIView {",
+        "label5.text = \"\\(todo.title)\"",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected:?} in generated UIKit source:\n{generated}"
+        );
+    }
+}

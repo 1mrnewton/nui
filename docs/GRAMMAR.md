@@ -5,7 +5,8 @@ deliberately tiny: nui describes *what the UI is*, never *what it computes*.
 Anything smarter than a binding belongs in the logic layer.
 
 Record types (`type Person { ... }`) let state and logic functions carry
-structured values; see `examples/profile.nui`.
+structured values; see `examples/profile.nui`. List types (`[Todo]`) and
+`for ... in` render dynamic content; see `examples/todos.nui`.
 
 ## Example
 
@@ -49,9 +50,9 @@ component Counter {
 - **Comments**: `//` to end of line.
 - **Identifiers**: `[A-Za-z_][A-Za-z0-9_]*`.
 - **Keywords**: `component`, `type`, `state`, `logic`, `fn`, `if`, `else`,
-  `true`, `false`. (`event` is reserved and produces a migration error.
-  `style` and `on_click` are ordinary identifiers with special meaning as
-  view keys.)
+  `for`, `in`, `true`, `false`. (`event` is reserved and produces a
+  migration error. `style` and `on_click` are ordinary identifiers with
+  special meaning as view keys.)
 - **Numbers**: `123`, `-4`, `2.5`. A `.` only starts a fraction when a digit
   follows; `->` is the arrow.
 - **Strings**: double-quoted. Escapes: `\"`, `\\`, `\n`, `\t`, `\{`, `\}`.
@@ -67,18 +68,21 @@ typeDecl    = "type" IDENT "{" { field } "}" ;
 field       = IDENT ":" primType ;
 component   = "component" IDENT "{" { declaration } node "}" ;
 declaration = stateDecl | logicBlock ;
-stateDecl   = "state" IDENT ":" type "=" ( literal | recordLit ) ;
+stateDecl   = "state" IDENT ":" type "=" ( literal | recordLit | listLit ) ;
 logicBlock  = "logic" "{" { fnDecl } "}" ;
 fnDecl      = "fn" IDENT "(" [ paramList ] ")" "->" type ;
 paramList   = param { "," param } ;
 param       = IDENT ":" type ;
 primType    = "Int" | "Float" | "Bool" | "String" ;
-type        = primType | IDENT (* a declared record type *) ;
+type        = primType
+            | IDENT               (* a declared record type *)
+            | "[" ( primType | IDENT ) "]" ;  (* a list — no nesting *)
 
 node        = IDENT [ "{" { entry } "}" ] ;
 entry       = styleBlock | actionBlock | property | child ;
-child       = node | ifBranch ;
+child       = node | ifBranch | forLoop ;
 ifBranch    = "if" path "{" { child } "}" [ "else" "{" { child } "}" ] ;
+forLoop     = "for" IDENT "in" path "{" { child } "}" ;
 property    = IDENT ":" expr ;
 styleBlock  = "style" ":" "{" { styleProp } "}" ;
 styleProp   = IDENT ":" expr ;
@@ -87,6 +91,7 @@ action      = IDENT "=" call ;
 call        = IDENT "(" [ expr { "," expr } ] ")" ;
 recordLit   = IDENT "(" fieldInit { "," fieldInit } ")" ;
 fieldInit   = IDENT ":" literal ;
+listLit     = "[" [ ( literal | recordLit ) { "," ( literal | recordLit ) } ] "]" ;
 
 path        = IDENT { "." IDENT } ;
 expr        = literal | path ;
@@ -121,6 +126,12 @@ Notes:
   no comparisons or boolean expressions in the UI; anything smarter than a
   flag is computed in the logic layer (see `examples/toggle.nui`).
   `else if` is not supported yet; nest an `if` inside `else { ... }`.
+- `for item in items` also appears in child position and renders one
+  subtree per element of a list state. The loop variable is a scoped local:
+  interpolate it (`"{todo.title}"`) anywhere in the body. V1 guardrails,
+  all compile errors: no `if`, `for`, or `TextField` inside a `for` body,
+  and loop variables can't be passed to logic functions (whole-list
+  operations only — per-row actions need identity and come later).
 
 ## Views (v0)
 
@@ -131,7 +142,7 @@ Notes:
 | `TextField` | `bind:` a `String` state — required; `placeholder:` string | no |
 | `Image` | `source:` plain string — required | no |
 | `VStack` / `HStack` | `spacing:` number | yes |
-| `List` | none | yes |
+| `List` | none | yes (typically a `for`) |
 | `Spacer` | none | no |
 
 Every view except `Spacer` also accepts one `style:` block.
@@ -167,15 +178,21 @@ Every view except `Spacer` also accepts one `style:` block.
   UniFFI `Record` struct prefixed with the component name
   (`ProfilePerson`) so the UniFFI-generated Swift never collides with the
   UI-side struct (`Person`); the generated bridge converts field-by-field.
+- Lists cross the FFI boundary whole (`[Todo]` ↔ `Vec<TodoListTodo>`),
+  converted element-wise in the bridge. `for` renders them: SwiftUI gets a
+  native `ForEach`; UIKit gets a container stack whose rows are rebuilt
+  from a generated `makeRow(_:)` on every state change — deliberate
+  wholesale rebuild, still no diffing engine.
 - Everything is checked at compile time: state references, record fields,
   function references, property names, argument types, and return types.
   A `.nui` file that compiles cannot make an ill-typed call at runtime.
 
 ## Reserved for later (not implemented, by design)
 
-- Record fields of record type (nesting), and list types (`[Todo]`)
+- Record fields of record or list type (nesting), and nested lists
+- Per-row actions (toggle/delete one item) — needs element identity across
+  the FFI, not just an index
 - `else if` chains (nest an `if` inside `else { ... }` for now)
-- `for x in items` — dynamic `List` content over collection state
 - Component composition (`component Row { ... }` used inside another view)
 - More action keys (`on_submit:` for `TextField`, `on_appear:`) and
   multiple actions per block

@@ -207,3 +207,29 @@ fn emits_record_types_and_field_paths() {
         );
     }
 }
+
+#[test]
+fn emits_foreach_over_list_state() {
+    let source = include_str!("../examples/todos.nui");
+    let generated = swift::generate(&compile(source).unwrap());
+
+    for expected in [
+        // Seeded list literal as the state default.
+        "public var todos: [Todo]",
+        "todos: [Todo] = [Todo(title: \"Learn nui\")]",
+        // Whole lists in the logic protocol.
+        "func add(todos: [Todo]) async -> [Todo]",
+        // Native ForEach with the loop variable bound by index.
+        "ForEach(store.state.todos.indices, id: \\.self) { todoIndex in",
+        "let todo = store.state.todos[todoIndex]",
+        // The loop variable is a plain local in interpolation.
+        "Text(\"\\(todo.title)\")",
+        // Preview stubs return an empty list.
+        "func add(todos: [Todo]) async -> [Todo] { [] }",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected:?} in generated Swift:\n{generated}"
+        );
+    }
+}

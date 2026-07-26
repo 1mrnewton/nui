@@ -509,3 +509,236 @@ fn bool_record_fields_drive_if_conditions() {
     };
     assert_eq!(condition, "flags.ready");
 }
+
+// --- lists and `for` ---
+
+const TODOS: &str = include_str!("../examples/todos.nui");
+
+#[test]
+fn compiles_todos_example_with_lists() {
+    let doc = compile(TODOS).expect("todos example should compile");
+    let component = &doc.component;
+    assert_eq!(component.name, "TodoList");
+
+    let todo_list = ir::Type::List(Box::new(ir::Type::Record("Todo".into())));
+    assert_eq!(component.state[0].name, "todos");
+    assert_eq!(component.state[0].ty, todo_list);
+    assert_eq!(
+        component.state[0].initial,
+        ir::Value::List(vec![ir::Value::Record(vec![ir::FieldValue {
+            name: "title".into(),
+            value: ir::Value::String("Learn nui".into()),
+        }])])
+    );
+    assert_eq!(component.functions[0].params[0].ty, todo_list);
+    assert_eq!(component.functions[0].returns, todo_list);
+
+    let ir::Node::VStack { children, .. } = &component.root else {
+        panic!("expected VStack root");
+    };
+    let ir::Node::List { children, .. } = &children[2] else {
+        panic!("expected a List, got {:?}", children[2]);
+    };
+    let ir::Node::For {
+        binding,
+        source,
+        children,
+    } = &children[0]
+    else {
+        panic!("expected a for node, got {:?}", children[0]);
+    };
+    assert_eq!(binding, "todo");
+    assert_eq!(source, "todos");
+    let ir::Node::Text { content, .. } = &children[0] else {
+        panic!("expected Text in the for body");
+    };
+    assert_eq!(
+        content.0,
+        [ir::TextSegment::Local {
+            name: "todo.title".into()
+        }]
+    );
+
+    // Empty and seeded list values survive the JSON round trip.
+    let json = serde_json::to_string(&doc).unwrap();
+    let back: ir::Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc, back);
+}
+
+#[test]
+fn empty_list_initializers_round_trip() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            VStack {
+                for name in names { Text { text: "{name}" } }
+            }
+        }
+    "#;
+    let doc = compile(source).unwrap();
+    assert_eq!(doc.component.state[0].initial, ir::Value::List(vec![]));
+    let json = serde_json::to_string(&doc).unwrap();
+    let back: ir::Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(doc, back);
+}
+
+#[test]
+fn rejects_for_over_a_non_list() {
+    let source = r#"
+        component X {
+            state count: Int = 0
+            VStack {
+                for item in count { Spacer }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("needs a list") && err.message.contains("Int"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_if_inside_a_for_body() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            state on: Bool = true
+            VStack {
+                for name in names {
+                    if on { Spacer }
+                }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("`if` inside a `for`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_nested_for_loops() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            VStack {
+                for a in names {
+                    for b in names { Spacer }
+                }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("`for` inside another `for`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_textfield_inside_a_for_body() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            state draft: String = ""
+            VStack {
+                for name in names {
+                    TextField { bind: draft }
+                }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("`TextField` inside a `for`"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_loop_variables_as_call_arguments() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            logic { fn remove(names: [String], name: String) -> [String] }
+            VStack {
+                for name in names {
+                    Button { label: "x", on_click: { names = remove(names, name) } }
+                }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("loop variable"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn rejects_loop_variables_that_shadow_states() {
+    let source = r#"
+        component X {
+            state name: String = ""
+            state names: [String] = []
+            VStack {
+                for name in names { Spacer }
+            }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(err.message.contains("shadows"), "got: {}", err.message);
+}
+
+#[test]
+fn rejects_displaying_a_whole_list() {
+    let source = r#"
+        component X {
+            state names: [String] = []
+            Text { text: "{names}" }
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("whole list"),
+        "got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn list_initializer_elements_are_type_checked() {
+    let source = r#"
+        component X {
+            state counts: [Int] = [1, "two"]
+            Spacer
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(err.message.contains("Int"), "got: {}", err.message);
+}
+
+#[test]
+fn rejects_list_typed_record_fields() {
+    let source = r#"
+        type Todo { tags: [String] }
+        component X {
+            state todo: Todo = Todo(tags: [])
+            Spacer
+        }
+    "#;
+    let err = compile(source).unwrap_err();
+    assert!(
+        err.message.contains("primitives"),
+        "got: {}",
+        err.message
+    );
+}

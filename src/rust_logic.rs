@@ -152,6 +152,7 @@ pub fn rust_type(component: &str, ty: &ir::Type) -> String {
         ir::Type::Bool => "bool".into(),
         ir::Type::String => "String".into(),
         ir::Type::Record(name) => rust_record_name(component, name),
+        ir::Type::List(inner) => format!("Vec<{}>", rust_type(component, inner)),
     }
 }
 

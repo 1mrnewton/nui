@@ -1,0 +1,47 @@
+// Lists and loops: a list state, a `for` over it, and whole lists passing
+// through the Rust logic layer (Vec<TodoListTodo> across the FFI).
+//
+// nui owns the list; the logic layer owns what goes in it. `add` returns a
+// new list with one more item, `clear` returns an empty one — the UI never
+// mutates, it just re-renders whatever comes back.
+
+type Todo {
+    title: String
+}
+
+component TodoList {
+    state todos: [Todo] = [Todo(title: "Learn nui")]
+
+    logic {
+        fn add(todos: [Todo]) -> [Todo]
+        fn clear(todos: [Todo]) -> [Todo]
+    }
+
+    VStack {
+        spacing: 16
+        style: { padding: 24 }
+
+        Text {
+            text: "Todos"
+            style: { font: title }
+        }
+
+        HStack {
+            spacing: 12
+            Button {
+                label: "Add"
+                on_click: { todos = add(todos) }
+            }
+            Button {
+                label: "Clear"
+                on_click: { todos = clear(todos) }
+            }
+        }
+
+        List {
+            for todo in todos {
+                Text { text: "{todo.title}" }
+            }
+        }
+    }
+}

@@ -1,8 +1,8 @@
 //! Recursive-descent parser. See docs/GRAMMAR.md for the grammar.
 
 use crate::ast::{
-    ChildExpr, Component, Document, Expr, ExprKind, FnDecl, IfExpr, NodeExpr, Param, Prop, Span,
-    StateDecl, TypeDecl,
+    ChildExpr, Component, Document, Expr, ExprKind, FnDecl, ForExpr, IfExpr, NodeExpr, Param,
+    Prop, Span, StateDecl, TypeDecl,
 };
 use crate::error::{Error, Result};
 use crate::lexer::{lex, Token, TokenKind};
@@ -118,8 +118,7 @@ impl Parser {
                     let field_span = self.span();
                     let (field_name, _) = self.expect_ident("a field name")?;
                     self.expect(TokenKind::Colon, "`:` followed by the field type")?;
-                    let (ty, _) =
-                        self.expect_ident("a field type (Int, Float, Bool, or String)")?;
+                    let ty = self.type_ref("a field type (Int, Float, Bool, or String)")?;
                     fields.push(Param {
                         name: field_name,
                         ty,
@@ -184,8 +183,7 @@ impl Parser {
         self.expect(TokenKind::State, "`state`")?;
         let (name, _) = self.expect_ident("a state name")?;
         self.expect(TokenKind::Colon, "`:` followed by a type")?;
-        let (ty, _) =
-            self.expect_ident("a type (Int, Float, Bool, String, or a declared type)")?;
+        let ty = self.type_ref("a type (Int, Float, Bool, String, or a declared type)")?;
         self.expect(TokenKind::Eq, "`=` followed by an initial value")?;
         let initial = self.literal_expr("a literal initial value")?;
         Ok(StateDecl {
@@ -217,8 +215,8 @@ impl Parser {
                 let param_span = self.span();
                 let (param_name, _) = self.expect_ident("a parameter name")?;
                 self.expect(TokenKind::Colon, "`:` followed by the parameter type")?;
-                let (ty, _) =
-                    self.expect_ident("a type (Int, Float, Bool, String, or a declared type)")?;
+                let ty =
+                    self.type_ref("a type (Int, Float, Bool, String, or a declared type)")?;
                 params.push(Param {
                     name: param_name,
                     ty,
@@ -233,13 +231,27 @@ impl Parser {
         }
         self.expect(TokenKind::RParen, "`)` to close the parameter list")?;
         self.expect(TokenKind::Arrow, "`->` followed by the return type")?;
-        let (returns, _) = self.expect_ident("a return type")?;
+        let returns = self.type_ref("a return type")?;
         Ok(FnDecl {
             name,
             params,
             returns,
             span,
         })
+    }
+
+    /// Parses a type reference: a plain name (`Int`, `Person`) or a list
+    /// (`[Person]`), kept as a string for lowering to validate.
+    fn type_ref(&mut self, what: &str) -> Result<String> {
+        if self.peek_kind() == &TokenKind::LBracket {
+            self.bump();
+            let (inner, _) = self.expect_ident("an element type inside `[...]`")?;
+            self.expect(TokenKind::RBracket, "`]` to close the list type")?;
+            Ok(format!("[{inner}]"))
+        } else {
+            let (name, _) = self.expect_ident(what)?;
+            Ok(name)
+        }
     }
 
     /// Parses a view: `Name { prop: value  style: { ... }  Child { ... } }`.
@@ -278,6 +290,7 @@ impl Parser {
                         self.bump();
                     }
                     TokenKind::If => children.push(ChildExpr::If(self.if_expr()?)),
+                    TokenKind::For => children.push(ChildExpr::For(self.for_expr()?)),
                     TokenKind::Ident(_) if self.peek2_kind() == &TokenKind::Colon => {
                         let (key, key_span) = self.expect_ident("a property name")?;
                         self.bump(); // colon
@@ -350,6 +363,24 @@ impl Parser {
         })
     }
 
+    /// Parses `for item in list { children }` in child position.
+    fn for_expr(&mut self) -> Result<ForExpr> {
+        let span = self.span();
+        self.expect(TokenKind::For, "`for`")?;
+        let (binding, _) = self.expect_ident("a loop variable after `for`")?;
+        self.expect(TokenKind::In, "`in` after the loop variable")?;
+        let (source, _) = self.expect_ident("a list state after `in`")?;
+        let source = self.dotted_path(source)?;
+        self.expect(TokenKind::LBrace, "`{` to open the `for` body")?;
+        let children = self.child_list("for")?;
+        Ok(ForExpr {
+            binding,
+            source,
+            children,
+            span,
+        })
+    }
+
     /// Parses children until `}` — views and nested `if`s only; branches
     /// carry no properties of their own.
     fn child_list(&mut self, context: &str) -> Result<Vec<ChildExpr>> {
@@ -369,16 +400,17 @@ impl Parser {
                     self.bump();
                 }
                 TokenKind::If => children.push(ChildExpr::If(self.if_expr()?)),
+                TokenKind::For => children.push(ChildExpr::For(self.for_expr()?)),
                 TokenKind::Ident(_) if self.peek2_kind() == &TokenKind::Colon => {
                     return Err(self.error_here(format!(
-                        "an `{context}` branch holds child views only — \
+                        "an `{context}` body holds child views only — \
                          properties belong on the views inside"
                     )));
                 }
                 TokenKind::Ident(_) => children.push(ChildExpr::Node(self.node()?)),
                 other => {
                     return Err(self.error_here(format!(
-                        "expected a child view or `}}` in the `{context}` branch, found {}",
+                        "expected a child view or `}}` in the `{context}` body, found {}",
                         other.describe()
                     )));
                 }
@@ -444,6 +476,22 @@ impl Parser {
     fn expr(&mut self) -> Result<Expr> {
         let span = self.span();
         let kind = match self.peek_kind() {
+            TokenKind::LBracket => {
+                self.bump();
+                let mut elements = Vec::new();
+                if self.peek_kind() != &TokenKind::RBracket {
+                    loop {
+                        elements.push(self.expr()?);
+                        if self.peek_kind() == &TokenKind::Comma {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(TokenKind::RBracket, "`]` to close the list literal")?;
+                ExprKind::ListLit(elements)
+            }
             TokenKind::Int(_)
             | TokenKind::Float(_)
             | TokenKind::True
@@ -564,6 +612,7 @@ impl Parser {
                 | ExprKind::Bool(_)
                 | ExprKind::Str(_)
                 | ExprKind::RecordLit { .. }
+                | ExprKind::ListLit(_)
         ) {
             return Err(Error::new(
                 format!("expected {what}"),
@@ -801,5 +850,65 @@ mod tests {
             panic!("expected a call");
         };
         assert!(matches!(&args[0].kind, ExprKind::Ident(name) if name == "p.name"));
+    }
+
+    #[test]
+    fn parses_list_types_and_list_literals() {
+        let doc = parse(
+            r#"
+            type Todo { title: String }
+            component X {
+                state todos: [Todo] = [Todo(title: "a"), Todo(title: "b")]
+                state names: [String] = []
+                logic { fn add(todos: [Todo]) -> [Todo] }
+                Spacer
+            }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(doc.component.states[0].ty, "[Todo]");
+        let ExprKind::ListLit(elements) = &doc.component.states[0].initial.kind else {
+            panic!("expected a list literal initializer");
+        };
+        assert_eq!(elements.len(), 2);
+        assert!(matches!(
+            &elements[0].kind,
+            ExprKind::RecordLit { name, .. } if name == "Todo"
+        ));
+        let ExprKind::ListLit(empty) = &doc.component.states[1].initial.kind else {
+            panic!("expected an empty list literal");
+        };
+        assert!(empty.is_empty());
+        assert_eq!(doc.component.functions[0].params[0].ty, "[Todo]");
+        assert_eq!(doc.component.functions[0].returns, "[Todo]");
+    }
+
+    #[test]
+    fn parses_for_in_child_position() {
+        let doc = parse(
+            r#"
+            component X {
+                state names: [String] = []
+                VStack {
+                    for name in names {
+                        Text { text: "{name}" }
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let ChildExpr::For(for_expr) = &doc.component.root.children[0] else {
+            panic!("expected a for child");
+        };
+        assert_eq!(for_expr.binding, "name");
+        assert_eq!(for_expr.source, "names");
+        assert_eq!(for_expr.children.len(), 1);
+    }
+
+    #[test]
+    fn rejects_unterminated_list_type() {
+        let err = parse("component X { state xs: [Int = [] Spacer }").unwrap_err();
+        assert!(err.message.contains("`]`"), "got: {}", err.message);
     }
 }

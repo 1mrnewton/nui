@@ -137,6 +137,7 @@ pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
         types,
         state_types,
         functions: function_decls,
+        locals: HashMap::new(),
     };
     let root = lower_node(&ctx, &component.root)?;
 
@@ -152,10 +153,13 @@ pub fn lower(doc: &ast::Document) -> Result<ir::Document> {
     })
 }
 
+#[derive(Clone)]
 struct Ctx {
     types: HashMap<String, ir::RecordDecl>,
     state_types: HashMap<String, ir::Type>,
     functions: HashMap<String, ir::FunctionDecl>,
+    /// `for` loop variables in scope, mapped to their element types.
+    locals: HashMap<String, ir::Type>,
 }
 
 fn primitive_type(name: &str) -> Option<ir::Type> {
@@ -173,6 +177,11 @@ fn parse_type(
     name: &str,
     span: Span,
 ) -> Result<ir::Type> {
+    // The parser writes list types as `[X]`; nesting is impossible by
+    // construction (the element position only accepts a plain name).
+    if let Some(inner) = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')) {
+        return Ok(ir::Type::List(Box::new(parse_type(types, inner, span)?)));
+    }
     if let Some(ty) = primitive_type(name) {
         return Ok(ty);
     }
@@ -196,6 +205,7 @@ fn type_name(ty: &ir::Type) -> String {
         ir::Type::Bool => "Bool".into(),
         ir::Type::String => "String".into(),
         ir::Type::Record(name) => name.clone(),
+        ir::Type::List(inner) => format!("[{}]", type_name(inner)),
     }
 }
 
@@ -205,6 +215,27 @@ fn lower_initial(
     ty: &ir::Type,
     expr: &Expr,
 ) -> Result<ir::Value> {
+    if let ir::Type::List(inner) = ty {
+        let ExprKind::ListLit(elements) = &expr.kind else {
+            return Err(Error::new(
+                format!(
+                    "initial value for `{name}` must be a list literal — `[]` or \
+                     `[{0}(...), ...]`",
+                    type_name(inner)
+                ),
+                expr.span.line,
+                expr.span.col,
+            ));
+        };
+        let values = elements
+            .iter()
+            .enumerate()
+            .map(|(i, element)| {
+                lower_initial(types, &format!("{name}[{i}]"), inner, element)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(ir::Value::List(values));
+    }
     if let ir::Type::Record(record_name) = ty {
         let record = &types[record_name];
         let ExprKind::RecordLit {
@@ -328,6 +359,13 @@ fn lower_node(ctx: &Ctx, node: &ast::NodeExpr) -> Result<ir::Node> {
             }
         }
         "TextField" => {
+            if !ctx.locals.is_empty() {
+                return Err(Error::new(
+                    "`TextField` inside a `for` body is not supported yet",
+                    node.span.line,
+                    node.span.col,
+                ));
+            }
             check_props("TextField", node, &["bind", "placeholder"])?;
             no_children("TextField", node)?;
             let bind = require_prop("TextField", node, "bind", "bind: someStringState")?;
@@ -421,7 +459,56 @@ fn lower_children(ctx: &Ctx, node: &ast::NodeExpr) -> Result<Vec<ir::Node>> {
 fn lower_child(ctx: &Ctx, child: &ast::ChildExpr) -> Result<ir::Node> {
     match child {
         ast::ChildExpr::Node(node) => lower_node(ctx, node),
+        ast::ChildExpr::For(for_expr) => {
+            if !ctx.locals.is_empty() {
+                return Err(Error::new(
+                    "a `for` inside another `for` body is not supported yet",
+                    for_expr.span.line,
+                    for_expr.span.col,
+                ));
+            }
+            let source = &for_expr.source;
+            let source_ty = resolve_path(ctx, source, for_expr.span)?;
+            let ir::Type::List(element_ty) = source_ty else {
+                return Err(Error::new(
+                    format!(
+                        "`for ... in {source}` needs a list, but `{source}` is {}",
+                        type_name(&source_ty)
+                    ),
+                    for_expr.span.line,
+                    for_expr.span.col,
+                ));
+            };
+            let binding = &for_expr.binding;
+            if ctx.state_types.contains_key(binding) {
+                return Err(Error::new(
+                    format!("loop variable `{binding}` shadows a state; rename it"),
+                    for_expr.span.line,
+                    for_expr.span.col,
+                ));
+            }
+            let mut body_ctx = ctx.clone();
+            body_ctx
+                .locals
+                .insert(binding.clone(), (*element_ty).clone());
+            Ok(ir::Node::For {
+                binding: binding.clone(),
+                source: source.clone(),
+                children: for_expr
+                    .children
+                    .iter()
+                    .map(|child| lower_child(&body_ctx, child))
+                    .collect::<Result<Vec<_>>>()?,
+            })
+        }
         ast::ChildExpr::If(if_expr) => {
+            if !ctx.locals.is_empty() {
+                return Err(Error::new(
+                    "an `if` inside a `for` body is not supported yet",
+                    if_expr.span.line,
+                    if_expr.span.col,
+                ));
+            }
             let condition = &if_expr.condition;
             let ty = resolve_path(ctx, condition, if_expr.span)?;
             if ty != ir::Type::Bool {
@@ -532,12 +619,23 @@ fn no_children(kind: &str, node: &ast::NodeExpr) -> Result<()> {
 
 // --- expression helpers ---
 
-/// Resolves a state name or dotted record-field path (`person.name`) to
-/// its type.
+/// True when a path's head names a `for` loop variable rather than a state.
+fn path_is_local(ctx: &Ctx, path: &str) -> bool {
+    let head = path.split('.').next().expect("non-empty path");
+    ctx.locals.contains_key(head)
+}
+
+/// Resolves a state name, `for` loop variable, or dotted record-field path
+/// (`person.name`) to its type.
 fn resolve_path(ctx: &Ctx, path: &str, span: Span) -> Result<ir::Type> {
     let mut segments = path.split('.');
     let head = segments.next().expect("split yields at least one segment");
-    let Some(mut ty) = ctx.state_types.get(head).cloned() else {
+    let head_ty = ctx
+        .locals
+        .get(head)
+        .or_else(|| ctx.state_types.get(head))
+        .cloned();
+    let Some(mut ty) = head_ty else {
         return Err(Error::new(
             format!("unknown state `{head}`; declare it with `state {head}: <Type> = <value>`"),
             span.line,
@@ -568,8 +666,8 @@ fn resolve_path(ctx: &Ctx, path: &str, span: Span) -> Result<ir::Type> {
     Ok(ty)
 }
 
-/// Like [`resolve_path`], but rejects whole records (for positions that
-/// need a displayable value).
+/// Like [`resolve_path`], but rejects whole records and lists (for
+/// positions that need a displayable value).
 fn resolve_displayable(ctx: &Ctx, path: &str, span: Span) -> Result<ir::Type> {
     let ty = resolve_path(ctx, path, span)?;
     if let ir::Type::Record(record_name) = &ty {
@@ -583,7 +681,24 @@ fn resolve_displayable(ctx: &Ctx, path: &str, span: Span) -> Result<ir::Type> {
             span.col,
         ));
     }
+    if matches!(ty, ir::Type::List(_)) {
+        return Err(Error::new(
+            format!("cannot display a whole list — loop over `{path}` with `for`"),
+            span.line,
+            span.col,
+        ));
+    }
     Ok(ty)
+}
+
+/// Builds the text segment for a resolved path: loop variables become
+/// `Local` segments, states become `State` segments.
+fn path_segment(ctx: &Ctx, name: &str) -> ir::TextSegment {
+    if path_is_local(ctx, name) {
+        ir::TextSegment::Local { name: name.into() }
+    } else {
+        ir::TextSegment::State { name: name.into() }
+    }
 }
 
 fn text_content(ctx: &Ctx, expr: &Expr) -> Result<ir::TextContent> {
@@ -597,7 +712,7 @@ fn text_content(ctx: &Ctx, expr: &Expr) -> Result<ir::TextContent> {
                     }),
                     StrSegment::Interp(name) => {
                         resolve_displayable(ctx, name, expr.span)?;
-                        out.push(ir::TextSegment::State { name: name.clone() });
+                        out.push(path_segment(ctx, name));
                     }
                 }
             }
@@ -605,9 +720,7 @@ fn text_content(ctx: &Ctx, expr: &Expr) -> Result<ir::TextContent> {
         }
         ExprKind::Ident(name) => {
             resolve_displayable(ctx, name, expr.span)?;
-            Ok(ir::TextContent(vec![ir::TextSegment::State {
-                name: name.clone(),
-            }]))
+            Ok(ir::TextContent(vec![path_segment(ctx, name)]))
         }
         _ => Err(Error::new(
             "expected text: a string literal or a state name",
@@ -707,6 +820,16 @@ fn lower_call_arg(
     };
     match &arg.kind {
         ExprKind::Ident(name) => {
+            if path_is_local(ctx, name) {
+                return Err(Error::new(
+                    format!(
+                        "`{name}` is a loop variable; passing loop items to logic \
+                         functions is not supported yet"
+                    ),
+                    arg.span.line,
+                    arg.span.col,
+                ));
+            }
             let state_ty = resolve_path(ctx, name, arg.span)?;
             if state_ty != param.ty {
                 return Err(mismatch(&format!(
@@ -746,6 +869,7 @@ fn lower_call_arg(
         ExprKind::RecordLit { .. } => {
             Err(mismatch("a record literal (pass a record state instead)"))
         }
+        ExprKind::ListLit(_) => Err(mismatch("a list literal (pass a list state instead)")),
         ExprKind::Call { .. } | ExprKind::Assign { .. } => {
             Err(mismatch("a nested call (not supported)"))
         }

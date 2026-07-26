@@ -127,6 +127,8 @@ examples/
   toggle.nui  `if` / `else` subtrees driven by a Bool state
   profile.nui record types: structured state, dotted paths, records
               passing whole through the Rust logic
+  todos.nui   list types and `for … in`: dynamic rows, whole lists
+              through the Rust logic (Vec across the FFI)
 logic/
   counter/    the counter's Rust logic: pure fns, UniFFI bindings,
               build-xcframework.sh, host-app files (see its README)
@@ -160,7 +162,12 @@ tests/
       avoid symbol collisions; the bridge converts field-wise) — dotted
       paths in interpolation, arguments, and `if` conditions
       (`examples/profile.nui`)
-- [ ] List types (`[Todo]`) and `for … in` — dynamic `List` content
+- [x] List types (`[Todo]`) and `for … in` — scoped loop variables,
+      `Vec<T>` across the FFI with element-wise bridge conversion; a
+      native `ForEach` in SwiftUI, generated `makeRow(_:)` builders with
+      wholesale row rebuilds in UIKit (`examples/todos.nui`)
+- [ ] Per-row actions (toggle/delete one item) — element identity across
+      the FFI, smarter row updates in UIKit
 - [ ] Kotlin backend: the same file shape for Jetpack Compose
 - [ ] Language: component composition, navigation,
       named styles / design tokens
